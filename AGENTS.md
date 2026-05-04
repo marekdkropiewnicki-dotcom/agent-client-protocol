@@ -34,3 +34,30 @@ All paths in the protocol should be absolute
 - Run `npm run check` to make sure the json and zod schemas gets generated properly
 
 Never write readme files related to the conversation unless explicitly asked to.
+
+## Cursor Cloud specific instructions
+
+This is a **protocol schema library** (not a runtime application). There are no long-running services to start. Development consists of editing Rust source, regenerating schemas, and validating with the CI check pipeline.
+
+### Environment prerequisites
+
+- **Rust**: stable + nightly toolchains (edition 2024 requires Rust >= 1.85). Nightly is needed for `rustfmt`.
+- **Node.js**: latest LTS via nvm. npm is used for Prettier, Mintlify, and orchestration scripts.
+- **typos-cli**: `cargo install typos-cli` — used by `npm run spellcheck`.
+
+### Key commands (see `package.json` scripts)
+
+| Command | Purpose |
+|---|---|
+| `npm run check` | Full CI pipeline: clippy, format check, spellcheck, tests |
+| `npm run generate` | Regenerate JSON schemas from Rust types + format |
+| `cargo test --all-features` | Run Rust unit + doc tests |
+| `cargo clippy --all-features` | Lint Rust code |
+| `npm run format:check` | Verify Prettier + rustfmt formatting |
+| `npm run format` | Auto-fix formatting |
+
+### Gotchas
+
+- `cargo fmt` uses **nightly** rustfmt (Cargo.toml uses edition 2024 features). If `cargo fmt` errors about unstable features, ensure `rustup component add rustfmt --toolchain nightly` has been run — `cargo fmt` automatically uses the nightly formatter when available.
+- After changing Rust types in `src/`, always run `npm run generate` to regenerate schema files, then verify with `git diff --exit-code` that generated files are committed.
+- The `npm run check` command is the single command to validate everything before pushing. It mirrors the CI pipeline.
