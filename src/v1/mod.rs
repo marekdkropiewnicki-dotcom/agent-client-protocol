@@ -7,6 +7,8 @@ mod content;
 mod elicitation;
 mod error;
 mod ext;
+#[cfg(feature = "unstable_mcp_over_acp")]
+mod mcp;
 #[cfg(feature = "unstable_nes")]
 mod nes;
 mod plan;
@@ -24,6 +26,8 @@ use derive_more::{Display, From};
 pub use elicitation::*;
 pub use error::*;
 pub use ext::*;
+#[cfg(feature = "unstable_mcp_over_acp")]
+pub use mcp::*;
 #[cfg(feature = "unstable_nes")]
 pub use nes::*;
 pub use plan::*;
