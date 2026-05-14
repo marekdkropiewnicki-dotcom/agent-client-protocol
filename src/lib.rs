@@ -40,6 +40,7 @@
 
 pub mod rpc;
 mod serde_util;
+pub mod validation;
 mod v1;
 #[cfg(feature = "unstable_protocol_v2")]
 pub mod v2;
