@@ -4569,6 +4569,12 @@ pub struct PromptCapabilities {
     /// in prompt requests for pieces of context that are referenced in the message.
     #[serde(default)]
     pub embedded_context: bool,
+    /// Agent supports prompt variables and templates in `session/prompt` requests.
+    ///
+    /// When enabled, the Client is allowed to include [`ContentBlock::PromptTemplate`]
+    /// in prompt requests with variable substitution support.
+    #[serde(default)]
+    pub prompt_variables: bool,
     /// The _meta property is reserved by ACP to allow clients and agents to attach additional
     /// metadata to their interactions. Implementations MUST NOT make assumptions about values at
     /// these keys.
@@ -4605,6 +4611,16 @@ impl PromptCapabilities {
     #[must_use]
     pub fn embedded_context(mut self, embedded_context: bool) -> Self {
         self.embedded_context = embedded_context;
+        self
+    }
+
+    /// Agent supports prompt variables and templates in `session/prompt` requests.
+    ///
+    /// When enabled, the Client is allowed to include [`ContentBlock::PromptTemplate`]
+    /// in prompt requests with variable substitution support.
+    #[must_use]
+    pub fn prompt_variables(mut self, prompt_variables: bool) -> Self {
+        self.prompt_variables = prompt_variables;
         self
     }
 
