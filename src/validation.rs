@@ -4,6 +4,19 @@
 //! to ensure data integrity and security for user registration and authentication flows.
 
 use std::collections::HashSet;
+use std::sync::LazyLock;
+
+/// Pattern for identifier-style strings (auth method IDs, elicitation IDs, etc.).
+///
+/// Compiled once via `LazyLock` to avoid re-parsing the regex on every
+/// validation call (validation runs in hot paths like `validate_auth_methods`
+/// which iterates over a collection).
+pub(crate) static IDENTIFIER_PATTERN: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"^[a-zA-Z0-9_\-\.]+$").unwrap());
+
+/// Pattern for POSIX-style environment variable names.
+static ENV_VAR_NAME_PATTERN: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"^[A-Z][A-Z0-9_]*$").unwrap());
 
 /// Validation errors that can occur when validating protocol types.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -74,23 +87,28 @@ pub fn validate_string_field(
         });
     }
     
-    // Check minimum length
-    if let Some(min_len) = constraints.min_length {
-        if value.len() < min_len {
-            return Err(ValidationError::TooShort {
-                field: field_name.to_string(),
-                min_length: min_len,
-            });
+    // Check length constraints in characters (not bytes) so that multi-byte
+    // UTF-8 content (CJK, emoji, accented letters) is measured against the
+    // limit the caller intended.
+    if constraints.min_length.is_some() || constraints.max_length.is_some() {
+        let char_count = value.chars().count();
+
+        if let Some(min_len) = constraints.min_length {
+            if char_count < min_len {
+                return Err(ValidationError::TooShort {
+                    field: field_name.to_string(),
+                    min_length: min_len,
+                });
+            }
         }
-    }
-    
-    // Check maximum length
-    if let Some(max_len) = constraints.max_length {
-        if value.len() > max_len {
-            return Err(ValidationError::TooLong {
-                field: field_name.to_string(),
-                max_length: max_len,
-            });
+
+        if let Some(max_len) = constraints.max_length {
+            if char_count > max_len {
+                return Err(ValidationError::TooLong {
+                    field: field_name.to_string(),
+                    max_length: max_len,
+                });
+            }
         }
     }
     
@@ -124,10 +142,18 @@ pub fn validate_auth_method_id(id: &str) -> ValidationResult<()> {
         min_length: Some(1),
         max_length: Some(128),
         allow_empty: false,
-        pattern: Some(regex::Regex::new(r"^[a-zA-Z0-9_\-\.]+$").unwrap()),
+        pattern: None,
     };
-    
-    validate_string_field(id, "method_id", &constraints)
+
+    validate_string_field(id, "method_id", &constraints)?;
+
+    if !IDENTIFIER_PATTERN.is_match(id) {
+        return Err(ValidationError::InvalidCharacters {
+            field: "method_id".to_string(),
+        });
+    }
+
+    Ok(())
 }
 
 /// Validates an environment variable name.
@@ -140,8 +166,7 @@ pub fn validate_env_var_name(name: &str) -> ValidationResult<()> {
     }
     
     // Environment variable names should follow POSIX standards
-    let env_var_regex = regex::Regex::new(r"^[A-Z][A-Z0-9_]*$").unwrap();
-    if !env_var_regex.is_match(name) {
+    if !ENV_VAR_NAME_PATTERN.is_match(name) {
         return Err(ValidationError::InvalidEnvVarName {
             name: name.to_string(),
             reason: "Environment variable name must start with a letter and contain only uppercase letters, numbers, and underscores".to_string(),
@@ -249,6 +274,26 @@ mod tests {
         };
         let result = validate_string_field("abcdefgh", "test_field", &constraints);
         assert!(matches!(result, Err(ValidationError::TooLong { .. })));
+    }
+
+    #[test]
+    fn test_validate_string_field_length_is_measured_in_characters() {
+        // Each Japanese character is 3 bytes in UTF-8, so `len()` (bytes) would
+        // report 9 and incorrectly reject a 5-character max. `chars().count()`
+        // reports 3 and accepts the value.
+        let constraints = StringConstraints {
+            min_length: Some(1),
+            max_length: Some(5),
+            ..Default::default()
+        };
+        assert!(validate_string_field("日本語", "test_field", &constraints).is_ok());
+
+        // And the limit is still enforced by character count.
+        let too_long = "あいうえおか"; // 6 characters, 18 bytes
+        assert!(matches!(
+            validate_string_field(too_long, "test_field", &constraints),
+            Err(ValidationError::TooLong { .. })
+        ));
     }
     
     #[test]
