@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.13.3](https://github.com/agentclientprotocol/agent-client-protocol/compare/v0.13.2...v0.13.3) - 2026-05-22
+
+### Added
+
+- Stabilize logout method ([#1273](https://github.com/agentclientprotocol/agent-client-protocol/pull/1273))
+
+### Fixed
+
+- *(unstable)* Rename provider method types to singular ([#1272](https://github.com/agentclientprotocol/agent-client-protocol/pull/1272))
+
+### Other
+
+- *(rfd)* Move additional directories RFD to Preview ([#1276](https://github.com/agentclientprotocol/agent-client-protocol/pull/1276))
+- Add schema download note to schema page ([#1269](https://github.com/agentclientprotocol/agent-client-protocol/pull/1269))
+- *(deps)* bump num-conv from 0.2.1 to 0.2.2 in the minor group ([#1244](https://github.com/agentclientprotocol/agent-client-protocol/pull/1244))
+- Set minimum supported Rust version ([#1232](https://github.com/agentclientprotocol/agent-client-protocol/pull/1232))
+- Document ACP versioning semantics ([#1229](https://github.com/agentclientprotocol/agent-client-protocol/pull/1229))
+
+## [0.13.2](https://github.com/agentclientprotocol/agent-client-protocol/compare/v0.13.1...v0.13.2) - 2026-05-17
+
+### Fixed
+
+- *(unstable)* Update additionalDirectories guidance ([#1227](https://github.com/agentclientprotocol/agent-client-protocol/pull/1227))
+
+## [0.13.1](https://github.com/agentclientprotocol/agent-client-protocol/compare/v0.13.0...v0.13.1) - 2026-05-16
+
+### Added
+
+- *(unstable)* Add unstable session delete support ([#1216](https://github.com/agentclientprotocol/agent-client-protocol/pull/1216))
+
+## [0.13.0](https://github.com/agentclientprotocol/agent-client-protocol/compare/v0.12.2...v0.13.0) - 2026-05-12
+
+### Added
+
+- *(unstable)* Add experimental MCP-over-ACP message types ([#1185](https://github.com/agentclientprotocol/agent-client-protocol/pull/1185))
+
+### Other
+
+- add unstable mcp-over-acp additions to the schema ([#1173](https://github.com/agentclientprotocol/agent-client-protocol/pull/1173))
+- *(deps)* bump the minor group with 3 updates ([#1178](https://github.com/agentclientprotocol/agent-client-protocol/pull/1178))
+- *(deps)* bump the minor group with 2 updates ([#1121](https://github.com/agentclientprotocol/agent-client-protocol/pull/1121))
+- *(unstable)* Start setting up v2 Schema scaffolding for experimentation ([#1099](https://github.com/agentclientprotocol/agent-client-protocol/pull/1099))
+- reorganize to v1 module ([#1094](https://github.com/agentclientprotocol/agent-client-protocol/pull/1094))
+
 ## [0.12.2](https://github.com/agentclientprotocol/agent-client-protocol/compare/v0.12.1...v0.12.2) - 2026-04-23
 
 ### Added
