@@ -5494,12 +5494,14 @@ impl IntoV1 for super::PromptCapabilities {
             image,
             audio,
             embedded_context,
+            prompt_variables,
             meta,
         } = self;
         Ok(crate::v1::PromptCapabilities {
             image: image.into_v1()?,
             audio: audio.into_v1()?,
             embedded_context: embedded_context.into_v1()?,
+            prompt_variables: prompt_variables.into_v1()?,
             meta: meta.into_v1()?,
         })
     }
@@ -5513,12 +5515,14 @@ impl IntoV2 for crate::v1::PromptCapabilities {
             image,
             audio,
             embedded_context,
+            prompt_variables,
             meta,
         } = self;
         Ok(super::PromptCapabilities {
             image: image.into_v2()?,
             audio: audio.into_v2()?,
             embedded_context: embedded_context.into_v2()?,
+            prompt_variables: prompt_variables.into_v2()?,
             meta: meta.into_v2()?,
         })
     }
@@ -8836,6 +8840,9 @@ impl IntoV1 for super::ContentBlock {
             Self::Audio(value) => crate::v1::ContentBlock::Audio(value.into_v1()?),
             Self::ResourceLink(value) => crate::v1::ContentBlock::ResourceLink(value.into_v1()?),
             Self::Resource(value) => crate::v1::ContentBlock::Resource(value.into_v1()?),
+            Self::PromptTemplate(value) => {
+                crate::v1::ContentBlock::PromptTemplate(value.into_v1()?)
+            }
         })
     }
 }
@@ -8850,6 +8857,7 @@ impl IntoV2 for crate::v1::ContentBlock {
             Self::Audio(value) => super::ContentBlock::Audio(value.into_v2()?),
             Self::ResourceLink(value) => super::ContentBlock::ResourceLink(value.into_v2()?),
             Self::Resource(value) => super::ContentBlock::Resource(value.into_v2()?),
+            Self::PromptTemplate(value) => super::ContentBlock::PromptTemplate(value.into_v2()?),
         })
     }
 }
@@ -9222,6 +9230,132 @@ impl IntoV2 for crate::v1::Role {
     }
 }
 
+impl IntoV1 for super::PromptTemplateContent {
+    type Output = crate::v1::PromptTemplateContent;
+
+    fn into_v1(self) -> Result<Self::Output> {
+        let Self {
+            annotations,
+            template,
+            variables,
+            meta,
+        } = self;
+        Ok(crate::v1::PromptTemplateContent {
+            annotations: annotations.into_v1()?,
+            template: template.into_v1()?,
+            variables: variables.into_v1()?,
+            meta: meta.into_v1()?,
+        })
+    }
+}
+
+impl IntoV2 for crate::v1::PromptTemplateContent {
+    type Output = super::PromptTemplateContent;
+
+    fn into_v2(self) -> Result<Self::Output> {
+        let Self {
+            annotations,
+            template,
+            variables,
+            meta,
+        } = self;
+        Ok(super::PromptTemplateContent {
+            annotations: annotations.into_v2()?,
+            template: template.into_v2()?,
+            variables: variables.into_v2()?,
+            meta: meta.into_v2()?,
+        })
+    }
+}
+
+impl IntoV1 for super::PromptVariable {
+    type Output = crate::v1::PromptVariable;
+
+    fn into_v1(self) -> Result<Self::Output> {
+        let Self {
+            name,
+            value,
+            description,
+            variable_type,
+            required,
+            default_value,
+            meta,
+        } = self;
+        Ok(crate::v1::PromptVariable {
+            name: name.into_v1()?,
+            value: value.into_v1()?,
+            description: description.into_v1()?,
+            variable_type: variable_type.into_v1()?,
+            required: required.into_v1()?,
+            default_value: default_value.into_v1()?,
+            meta: meta.into_v1()?,
+        })
+    }
+}
+
+impl IntoV2 for crate::v1::PromptVariable {
+    type Output = super::PromptVariable;
+
+    fn into_v2(self) -> Result<Self::Output> {
+        let Self {
+            name,
+            value,
+            description,
+            variable_type,
+            required,
+            default_value,
+            meta,
+        } = self;
+        Ok(super::PromptVariable {
+            name: name.into_v2()?,
+            value: value.into_v2()?,
+            description: description.into_v2()?,
+            variable_type: variable_type.into_v2()?,
+            required: required.into_v2()?,
+            default_value: default_value.into_v2()?,
+            meta: meta.into_v2()?,
+        })
+    }
+}
+
+impl IntoV1 for super::PromptVariableType {
+    type Output = crate::v1::PromptVariableType;
+
+    fn into_v1(self) -> Result<Self::Output> {
+        Ok(match self {
+            Self::String => crate::v1::PromptVariableType::String,
+            Self::Number => crate::v1::PromptVariableType::Number,
+            Self::Boolean => crate::v1::PromptVariableType::Boolean,
+            Self::DateTime => crate::v1::PromptVariableType::DateTime,
+            Self::Url => crate::v1::PromptVariableType::Url,
+            Self::Email => crate::v1::PromptVariableType::Email,
+            Self::Text => crate::v1::PromptVariableType::Text,
+            Self::Select { options } => crate::v1::PromptVariableType::Select {
+                options: options.into_v1()?,
+            },
+        })
+    }
+}
+
+impl IntoV2 for crate::v1::PromptVariableType {
+    type Output = super::PromptVariableType;
+
+    fn into_v2(self) -> Result<Self::Output> {
+        Ok(match self {
+            Self::String => super::PromptVariableType::String,
+            Self::Number => super::PromptVariableType::Number,
+            Self::Boolean => super::PromptVariableType::Boolean,
+            Self::DateTime => super::PromptVariableType::DateTime,
+            Self::Url => super::PromptVariableType::Url,
+            Self::Email => super::PromptVariableType::Email,
+            Self::Text => super::PromptVariableType::Text,
+            Self::Select { options } => super::PromptVariableType::Select {
+                options: options.into_v2()?,
+            },
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -9465,6 +9599,82 @@ mod tests {
         );
         assert_v2_round_trip::<v2::PromptRequest, v1::PromptRequest>(request.clone());
         assert_json_eq_after_v2_to_v1::<v2::PromptRequest, v1::PromptRequest>(request);
+    }
+
+    #[test]
+    fn round_trips_prompt_template_content() {
+        let variables = vec![
+            v1::PromptVariable::new("name").value("Alice"),
+            v1::PromptVariable::new("task")
+                .value("testing")
+                .description("The task to perform")
+                .variable_type(v1::PromptVariableType::String)
+                .required(true),
+        ];
+        let template =
+            v1::PromptTemplateContent::new("Hello {{name}}, let's do some {{task}}!", variables);
+
+        assert_v1_round_trip::<v1::PromptTemplateContent, v2::PromptTemplateContent>(
+            template.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::PromptTemplateContent, v2::PromptTemplateContent>(
+            template,
+        );
+    }
+
+    #[test]
+    fn round_trips_prompt_variable_types() {
+        let test_types = vec![
+            v2::PromptVariableType::String,
+            v2::PromptVariableType::Number,
+            v2::PromptVariableType::Boolean,
+            v2::PromptVariableType::DateTime,
+            v2::PromptVariableType::Url,
+            v2::PromptVariableType::Email,
+            v2::PromptVariableType::Text,
+            v2::PromptVariableType::Select {
+                options: vec!["option1".to_string(), "option2".to_string()],
+            },
+        ];
+
+        for var_type in test_types {
+            assert_v2_round_trip::<v2::PromptVariableType, v1::PromptVariableType>(
+                var_type.clone(),
+            );
+            assert_json_eq_after_v2_to_v1::<v2::PromptVariableType, v1::PromptVariableType>(
+                var_type,
+            );
+        }
+    }
+
+    #[test]
+    fn round_trips_prompt_capabilities_with_variables() {
+        let capabilities = v1::PromptCapabilities::new()
+            .image(true)
+            .audio(false)
+            .embedded_context(true)
+            .prompt_variables(true);
+
+        assert_v1_round_trip::<v1::PromptCapabilities, v2::PromptCapabilities>(
+            capabilities.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::PromptCapabilities, v2::PromptCapabilities>(
+            capabilities,
+        );
+    }
+
+    #[test]
+    fn round_trips_content_block_with_prompt_template() {
+        let variables = vec![
+            v2::PromptVariable::new("user").value("Bob"),
+            v2::PromptVariable::new("action").value("review"),
+        ];
+        let template =
+            v2::PromptTemplateContent::new("{{user}} needs to {{action}} this code", variables);
+        let content_block = v2::ContentBlock::PromptTemplate(template);
+
+        assert_v2_round_trip::<v2::ContentBlock, v1::ContentBlock>(content_block.clone());
+        assert_json_eq_after_v2_to_v1::<v2::ContentBlock, v1::ContentBlock>(content_block);
     }
 
     #[test]

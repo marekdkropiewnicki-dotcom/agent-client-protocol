@@ -140,7 +140,7 @@ See protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/exte
 <ResponseField name="agentCapabilities" type={<a href="#agentcapabilities">AgentCapabilities</a>} >
   Capabilities supported by the agent.
 
-    - Default: `{"auth":{},"loadSession":false,"mcpCapabilities":{"http":false,"sse":false},"promptCapabilities":{"audio":false,"embeddedContext":false,"image":false},"sessionCapabilities":{}}`
+    - Default: `{"auth":{},"loadSession":false,"mcpCapabilities":{"http":false,"sse":false},"promptCapabilities":{"audio":false,"embeddedContext":false,"image":false,"promptVariables":false},"sessionCapabilities":{}}`
 
 </ResponseField>
 <ResponseField name="agentInfo" type={<><span><a href="#implementation">Implementation</a></span><span> | null</span></>} >
@@ -1365,7 +1365,7 @@ See protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/exte
 <ResponseField name="promptCapabilities" type={<a href="#promptcapabilities">PromptCapabilities</a>} >
   Prompt capabilities supported by the agent.
 
-    - Default: `{"audio":false,"embeddedContext":false,"image":false}`
+    - Default: `{"audio":false,"embeddedContext":false,"image":false,"promptVariables":false}`
 
 </ResponseField>
 <ResponseField name="sessionCapabilities" type={<a href="#sessioncapabilities">SessionCapabilities</a>} >
@@ -1811,6 +1811,40 @@ See protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/exte
 </ResponseField>
 <ResponseField name="type" type={"string"} required>
   The discriminator value. Must be `"resource"`.
+</ResponseField>
+
+</Expandable>
+</ResponseField>
+
+<ResponseField name="prompt_template" type="object">
+A template that supports variable substitution using \{\{variable_name\}\} syntax.
+
+Allows dynamic content generation by substituting variables into template strings.
+Variables are resolved at processing time and can include values from context,
+user input, or system state.
+
+Requires the `promptVariables` prompt capability when included in prompts.
+
+<Expandable title="Properties">
+
+<ResponseField name="_meta" type={"object | null"} >
+  The _meta property is reserved by ACP to allow clients and agents to attach additional
+metadata to their interactions. Implementations MUST NOT make assumptions about values at
+these keys.
+
+See protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/extensibility)
+
+</ResponseField>
+<ResponseField name="annotations" type={<><span><a href="#annotations">Annotations</a></span><span> | null</span></>} >
+</ResponseField>
+<ResponseField name="template" type={"string"} required>
+  The template string with \{\{variable_name\}\} placeholders.
+</ResponseField>
+<ResponseField name="type" type={"string"} required>
+  The discriminator value. Must be `"prompt_template"`.
+</ResponseField>
+<ResponseField name="variables" type={<a href="#promptvariable">PromptVariable[]</a>} required>
+  Variables available for substitution in this template.
 </ResponseField>
 
 </Expandable>
@@ -2632,6 +2666,133 @@ in prompt requests for pieces of context that are referenced in the message.
 
     - Default: `false`
 
+</ResponseField>
+<ResponseField name="promptVariables" type={"boolean"} >
+  Agent supports prompt variables and templates in `session/prompt` requests.
+
+When enabled, the Client is allowed to include `ContentBlock::PromptTemplate`
+in prompt requests with variable substitution support.
+
+    - Default: `false`
+
+</ResponseField>
+
+## <span class="font-mono">PromptTemplateContent</span>
+
+A template content block that supports variable substitution.
+
+Templates use \{\{variable_name\}\} syntax for variable placeholders that can be
+substituted with actual values at processing time. This enables dynamic content
+generation and reusable prompt templates.
+
+**Type:** Object
+
+**Properties:**
+
+<ResponseField name="_meta" type={"object | null"} >
+  The _meta property is reserved by ACP to allow clients and agents to attach additional
+metadata to their interactions. Implementations MUST NOT make assumptions about values at
+these keys.
+
+See protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/extensibility)
+
+</ResponseField>
+<ResponseField name="annotations" type={<><span><a href="#annotations">Annotations</a></span><span> | null</span></>} >
+</ResponseField>
+<ResponseField name="template" type={"string"} required>
+  The template string with \{\{variable_name\}\} placeholders.
+</ResponseField>
+<ResponseField name="variables" type={<a href="#promptvariable">PromptVariable[]</a>} required>
+  Variables available for substitution in this template.
+</ResponseField>
+
+## <span class="font-mono">PromptVariable</span>
+
+A variable that can be substituted in a prompt template.
+
+Variables define named placeholders that can be replaced with actual values
+during template processing. They can include metadata about expected types,
+descriptions for user interfaces, and validation constraints.
+
+**Type:** Object
+
+**Properties:**
+
+<ResponseField name="_meta" type={"object | null"} >
+  The _meta property is reserved by ACP to allow clients and agents to attach additional
+metadata to their interactions. Implementations MUST NOT make assumptions about values at
+these keys.
+
+See protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/extensibility)
+
+</ResponseField>
+<ResponseField name="default_value" type={"string | null"} >
+  Default value to use if no value is provided.
+</ResponseField>
+<ResponseField name="description" type={"string | null"} >
+  Human-readable description of this variable.
+</ResponseField>
+<ResponseField name="name" type={"string"} required>
+  The variable name (used in \{\{variable_name\}\} placeholders).
+</ResponseField>
+<ResponseField name="required" type={"boolean"} >
+  Whether this variable is required for template processing.
+
+    - Default: `false`
+
+</ResponseField>
+<ResponseField name="type" type={<><span><a href="#promptvariabletype">PromptVariableType</a></span><span> | null</span></>} >
+  The expected type of this variable's value.
+</ResponseField>
+<ResponseField name="value" type={"string | null"} >
+  The current value of the variable (if set).
+</ResponseField>
+
+## <span class="font-mono">PromptVariableType</span>
+
+The expected type of a prompt variable's value.
+
+This helps clients provide appropriate input interfaces and validation
+for prompt variables.
+
+**Type:** Union
+
+<ResponseField name="string" type="string">
+  A string value (default if not specified).
+</ResponseField>
+
+<ResponseField name="number" type="string">
+  A numeric value (integer or float).
+</ResponseField>
+
+<ResponseField name="boolean" type="string">
+  A boolean value (true/false).
+</ResponseField>
+
+<ResponseField name="date_time" type="string">
+  A date/time value in ISO 8601 format.
+</ResponseField>
+
+<ResponseField name="url" type="string">
+  A URL or URI reference.
+</ResponseField>
+
+<ResponseField name="email" type="string">
+  An email address.
+</ResponseField>
+
+<ResponseField name="text" type="string">
+  A multiline text value.
+</ResponseField>
+
+<ResponseField name="Object" type="object">
+A value selected from a predefined list (enum-like).
+
+<Expandable title="Properties">
+
+<ResponseField name="select" type={"object"} required></ResponseField>
+
+</Expandable>
 </ResponseField>
 
 ## <span class="font-mono">ProtocolVersion</span>
