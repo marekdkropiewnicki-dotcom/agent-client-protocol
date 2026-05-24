@@ -20,9 +20,6 @@ pub enum ValidationError {
     #[error("Field '{field}' contains invalid characters")]
     InvalidCharacters { field: String },
     
-    #[error("Field '{field}' has invalid format: {reason}")]
-    InvalidFormat { field: String, reason: String },
-    
     #[error("Duplicate identifier found: {id}")]
     DuplicateId { id: String },
     
@@ -139,7 +136,10 @@ pub fn validate_env_var_name(name: &str) -> ValidationResult<()> {
         });
     }
     
-    // Environment variable names should follow POSIX standards
+    // Environment variable names must follow the stricter convention used here:
+    // start with an uppercase letter and contain only uppercase letters, digits,
+    // and underscores. This is intentionally narrower than POSIX, which also
+    // permits lowercase letters and a leading underscore.
     let env_var_regex = regex::Regex::new(r"^[A-Z][A-Z0-9_]*$").unwrap();
     if !env_var_regex.is_match(name) {
         return Err(ValidationError::InvalidEnvVarName {
