@@ -57,7 +57,7 @@ pub enum ContentBlock {
     ///
     /// Requires the `embeddedContext` prompt capability when included in prompts.
     Resource(EmbeddedResource),
-    /// A template that supports variable substitution using {{variable_name}} syntax.
+    /// A template that supports variable substitution using `{{variable_name}}` syntax.
     ///
     /// Allows dynamic content generation by substituting variables into template strings.
     /// Variables are resolved at processing time and can include values from context,
@@ -528,7 +528,7 @@ pub enum Role {
 
 /// A template content block that supports variable substitution.
 ///
-/// Templates use {{variable_name}} syntax for variable placeholders that can be
+/// Templates use `{{variable_name}}` syntax for variable placeholders that can be
 /// substituted with actual values at processing time. This enables dynamic content
 /// generation and reusable prompt templates.
 #[serde_as]
@@ -539,7 +539,7 @@ pub struct PromptTemplateContent {
     #[serde_as(deserialize_as = "DefaultOnError")]
     #[serde(default)]
     pub annotations: Option<Annotations>,
-    /// The template string with {{variable_name}} placeholders.
+    /// The template string with `{{variable_name}}` placeholders.
     pub template: String,
     /// Variables available for substitution in this template.
     pub variables: Vec<PromptVariable>,
@@ -582,7 +582,7 @@ impl PromptTemplateContent {
 
     /// Substitute variables in the template and return the resolved text.
     ///
-    /// This method processes the template string and replaces {{variable_name}}
+    /// This method processes the template string and replaces `{{variable_name}}`
     /// placeholders with their corresponding values from the variables vector.
     /// If a variable is not found or has no value, the placeholder is left unchanged.
     #[must_use]
@@ -610,7 +610,7 @@ impl PromptTemplateContent {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[non_exhaustive]
 pub struct PromptVariable {
-    /// The variable name (used in {{variable_name}} placeholders).
+    /// The variable name (used in `{{variable_name}}` placeholders).
     pub name: String,
     /// The current value of the variable (if set).
     pub value: Option<String>,

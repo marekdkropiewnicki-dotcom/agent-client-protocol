@@ -4556,6 +4556,7 @@ impl SessionCloseCapabilities {
 #[derive(Default, Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
+#[allow(clippy::struct_excessive_bools)]
 pub struct PromptCapabilities {
     /// Agent supports [`ContentBlock::Image`].
     #[serde(default)]
