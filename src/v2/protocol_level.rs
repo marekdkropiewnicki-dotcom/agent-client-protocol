@@ -162,8 +162,7 @@ mod tests {
     fn cancel_request_notification_preserves_meta_when_set() {
         let mut meta = Meta::new();
         meta.insert("trace".to_string(), json!("abc123"));
-        let notif =
-            CancelRequestNotification::new(RequestId::Number(42)).meta(meta.clone());
+        let notif = CancelRequestNotification::new(RequestId::Number(42)).meta(meta.clone());
 
         let serialized = serde_json::to_value(&notif).unwrap();
         assert_eq!(

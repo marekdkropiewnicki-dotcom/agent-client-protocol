@@ -142,7 +142,7 @@ mod tests {
         assert_eq!(serialized, serde_json::json!({"ok": true}));
 
         // The From<Arc<RawValue>> impl also works.
-        let from_impl: ExtResponse = raw(r#"42"#).into();
+        let from_impl: ExtResponse = raw("42").into();
         let serialized = serde_json::to_value(&from_impl).unwrap();
         assert_eq!(serialized, serde_json::json!(42));
     }
