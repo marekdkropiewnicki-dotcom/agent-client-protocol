@@ -510,7 +510,7 @@ mod tests {
     fn from_anyhow_error_wraps_other_errors_as_internal_error() {
         // Some unrelated error (io::Error) should collapse to InternalError
         // with the underlying error message preserved in `data`.
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "disk on fire");
+        let io_err = std::io::Error::other("disk on fire");
         let wrapped = anyhow::Error::from(io_err);
         let err: Error = wrapped.into();
         assert_eq!(i32::from(err.code), -32603);
@@ -520,7 +520,7 @@ mod tests {
 
     #[test]
     fn into_internal_error_records_source_message() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "boom");
+        let io_err = std::io::Error::other("boom");
         let err = Error::into_internal_error(&io_err);
         assert_eq!(i32::from(err.code), -32603);
         let data_str = err.data.as_ref().and_then(|d| d.as_str()).unwrap();

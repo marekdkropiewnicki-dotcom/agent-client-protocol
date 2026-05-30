@@ -798,10 +798,7 @@ mod tests {
 
     #[test]
     fn try_from_update_applies_defaults_for_optional_fields() {
-        let update = ToolCallUpdate::new(
-            "call-1",
-            ToolCallUpdateFields::new().title("my title"),
-        );
+        let update = ToolCallUpdate::new("call-1", ToolCallUpdateFields::new().title("my title"));
         let call = ToolCall::try_from(update).unwrap();
         assert_eq!(call.tool_call_id, ToolCallId::new("call-1"));
         assert_eq!(call.title, "my title");
