@@ -5721,8 +5721,7 @@ mod test_serialization {
             serde_json::from_value(json!({"logout": "not an object"})).unwrap();
         assert!(parsed.logout.is_none());
 
-        let parsed: AgentAuthCapabilities =
-            serde_json::from_value(json!({"logout": 42})).unwrap();
+        let parsed: AgentAuthCapabilities = serde_json::from_value(json!({"logout": 42})).unwrap();
         assert!(parsed.logout.is_none());
 
         // `null` is treated as "absent", giving `None`.

@@ -353,3 +353,151 @@ pub(crate) const MCP_CONNECT_METHOD_NAME: &str = "mcp/connect";
 pub(crate) const MCP_MESSAGE_METHOD_NAME: &str = "mcp/message";
 /// Method name for closing an MCP-over-ACP connection.
 pub(crate) const MCP_DISCONNECT_METHOD_NAME: &str = "mcp/disconnect";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn method_name_constants_match_wire_format() {
+        assert_eq!(MCP_CONNECT_METHOD_NAME, "mcp/connect");
+        assert_eq!(MCP_MESSAGE_METHOD_NAME, "mcp/message");
+        assert_eq!(MCP_DISCONNECT_METHOD_NAME, "mcp/disconnect");
+    }
+
+    #[test]
+    fn connect_request_round_trip() {
+        let req = ConnectMcpRequest::new("project-tools-id");
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v, json!({"acpId": "project-tools-id"}));
+
+        let parsed: ConnectMcpRequest = serde_json::from_value(v).unwrap();
+        assert_eq!(parsed.acp_id, McpServerAcpId::new("project-tools-id"));
+        assert!(parsed.meta.is_none());
+    }
+
+    #[test]
+    fn connect_response_round_trip() {
+        let resp = ConnectMcpResponse::new("conn-42");
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v, json!({"connectionId": "conn-42"}));
+
+        let parsed: ConnectMcpResponse = serde_json::from_value(v).unwrap();
+        assert_eq!(parsed.connection_id, McpConnectionId::new("conn-42"));
+    }
+
+    #[test]
+    fn message_request_omits_unset_params_on_the_wire() {
+        let req = MessageMcpRequest::new("conn-1", "tools/list");
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v, json!({"connectionId": "conn-1", "method": "tools/list"}));
+        assert!(
+            !v.as_object().unwrap().contains_key("params"),
+            "unset params must be omitted, got {v}"
+        );
+    }
+
+    #[test]
+    fn message_request_serializes_provided_params() {
+        let mut params = serde_json::Map::new();
+        params.insert("cursor".into(), json!("abc"));
+
+        let req = MessageMcpRequest::new("conn-1", "tools/list").params(params.clone());
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(
+            v,
+            json!({
+                "connectionId": "conn-1",
+                "method": "tools/list",
+                "params": {"cursor": "abc"},
+            })
+        );
+
+        let parsed: MessageMcpRequest = serde_json::from_value(v).unwrap();
+        assert_eq!(parsed.params, Some(params));
+    }
+
+    #[test]
+    fn message_request_explicit_null_params_decode_to_none() {
+        let omitted: MessageMcpRequest =
+            serde_json::from_value(json!({"connectionId": "conn-1", "method": "ping"})).unwrap();
+        let explicit_null: MessageMcpRequest = serde_json::from_value(
+            json!({"connectionId": "conn-1", "method": "ping", "params": null}),
+        )
+        .unwrap();
+
+        assert_eq!(omitted.params, None);
+        assert_eq!(explicit_null.params, None);
+    }
+
+    #[test]
+    fn message_notification_round_trip_matches_request_shape() {
+        let note = MessageMcpNotification::new("conn-1", "notifications/progress");
+        let v = serde_json::to_value(&note).unwrap();
+        assert_eq!(
+            v,
+            json!({
+                "connectionId": "conn-1",
+                "method": "notifications/progress",
+            })
+        );
+
+        let parsed: MessageMcpNotification = serde_json::from_value(json!({
+            "connectionId": "conn-1",
+            "method": "notifications/progress",
+            "params": {"progressToken": "tok", "progress": 1}
+        }))
+        .unwrap();
+        assert_eq!(
+            parsed.params.unwrap().get("progressToken").unwrap(),
+            &json!("tok")
+        );
+    }
+
+    #[test]
+    fn message_response_preserves_arbitrary_inner_json_verbatim() {
+        let raw = serde_json::value::RawValue::from_string(
+            r#"{"tools":[{"name":"echo"}],"nextCursor":null}"#.to_string(),
+        )
+        .unwrap();
+        let resp = MessageMcpResponse::new(raw.into());
+
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v, json!({"tools": [{"name": "echo"}], "nextCursor": null}));
+
+        let reparsed: MessageMcpResponse = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&reparsed).unwrap(), v);
+    }
+
+    #[test]
+    fn disconnect_request_round_trip() {
+        let req = DisconnectMcpRequest::new("conn-7");
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v, json!({"connectionId": "conn-7"}));
+
+        let parsed: DisconnectMcpRequest = serde_json::from_value(v).unwrap();
+        assert_eq!(parsed.connection_id, McpConnectionId::new("conn-7"));
+    }
+
+    #[test]
+    fn disconnect_response_default_is_empty_object() {
+        let resp = DisconnectMcpResponse::new();
+        assert_eq!(serde_json::to_value(&resp).unwrap(), json!({}));
+        let parsed: DisconnectMcpResponse = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(parsed, DisconnectMcpResponse::default());
+    }
+
+    #[test]
+    fn meta_is_round_tripped_under_underscored_key() {
+        let mut meta = serde_json::Map::new();
+        meta.insert("trace_id".into(), json!("xyz"));
+
+        let req = ConnectMcpRequest::new("acp").meta(meta.clone());
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v["_meta"], json!({"trace_id": "xyz"}));
+
+        let parsed: ConnectMcpRequest = serde_json::from_value(v).unwrap();
+        assert_eq!(parsed.meta.as_ref().unwrap(), &meta);
+    }
+}
