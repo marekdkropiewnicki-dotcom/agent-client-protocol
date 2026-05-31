@@ -5568,6 +5568,87 @@ mod test_serialization {
         assert!(matches!(deserialized, AuthMethod::Agent(_)));
     }
 
+    #[test]
+    fn test_logout_method_name_is_stable() {
+        assert_eq!(AGENT_METHOD_NAMES.logout, "logout");
+        assert_eq!(
+            ClientRequest::LogoutRequest(LogoutRequest::new()).method(),
+            "logout"
+        );
+    }
+
+    #[test]
+    fn test_logout_request_round_trip_empty_and_with_meta() {
+        let req = LogoutRequest::new();
+        assert_eq!(serde_json::to_value(&req).unwrap(), json!({}));
+
+        let mut meta = serde_json::Map::new();
+        meta.insert("trace_id".into(), json!("abc"));
+        let req = LogoutRequest::new().meta(meta.clone());
+        let value = serde_json::to_value(&req).unwrap();
+        assert_eq!(value, json!({"_meta": {"trace_id": "abc"}}));
+
+        let deserialized: LogoutRequest = serde_json::from_value(value).unwrap();
+        assert_eq!(deserialized.meta.as_ref().unwrap(), &meta);
+    }
+
+    #[test]
+    fn test_logout_response_default_round_trip() {
+        let resp = LogoutResponse::new();
+        assert_eq!(serde_json::to_value(&resp).unwrap(), json!({}));
+
+        let parsed: LogoutResponse = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(parsed, LogoutResponse::default());
+
+        let envelope = AgentResponse::LogoutResponse(LogoutResponse::new());
+        let wire = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(wire, json!({}));
+    }
+
+    #[test]
+    fn test_agent_auth_capabilities_default_and_round_trip() {
+        let caps = AgentAuthCapabilities::new();
+        assert_eq!(serde_json::to_value(&caps).unwrap(), json!({}));
+
+        let caps = AgentAuthCapabilities::new().logout(LogoutCapabilities::new());
+        let v = serde_json::to_value(&caps).unwrap();
+        assert_eq!(v, json!({"logout": {}}));
+
+        let parsed: AgentAuthCapabilities = serde_json::from_value(v).unwrap();
+        assert!(parsed.logout.is_some());
+    }
+
+    #[test]
+    fn test_agent_auth_capabilities_tolerates_malformed_logout_field() {
+        let parsed: AgentAuthCapabilities =
+            serde_json::from_value(json!({"logout": "not an object"})).unwrap();
+        assert!(parsed.logout.is_none());
+
+        let parsed: AgentAuthCapabilities = serde_json::from_value(json!({"logout": 42})).unwrap();
+        assert!(parsed.logout.is_none());
+
+        let parsed: AgentAuthCapabilities =
+            serde_json::from_value(json!({"logout": null})).unwrap();
+        assert!(parsed.logout.is_none());
+    }
+
+    #[test]
+    fn test_agent_capabilities_default_omits_auth() {
+        let parsed: AgentCapabilities = serde_json::from_value(json!({})).unwrap();
+        assert!(parsed.auth.logout.is_none());
+    }
+
+    #[test]
+    fn test_agent_capabilities_threads_auth_through_round_trip() {
+        let caps = AgentCapabilities::new()
+            .auth(AgentAuthCapabilities::new().logout(LogoutCapabilities::new()));
+        let v = serde_json::to_value(&caps).unwrap();
+        assert_eq!(v["auth"], json!({"logout": {}}));
+
+        let parsed: AgentCapabilities = serde_json::from_value(v).unwrap();
+        assert!(parsed.auth.logout.is_some());
+    }
+
     #[cfg(feature = "unstable_session_delete")]
     #[test]
     fn test_session_delete_serialization() {
