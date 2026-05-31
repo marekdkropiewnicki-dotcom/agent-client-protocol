@@ -370,4 +370,156 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn error_code_round_trip_to_i32() {
+        // Standard JSON-RPC numeric codes are part of the protocol contract;
+        // regressing them would silently break clients that match on numbers.
+        for error in ErrorCode::iter() {
+            let n: i32 = error.into();
+            let back: ErrorCode = n.into();
+            assert_eq!(error, back);
+        }
+        // Unknown numeric codes must round-trip through `Other(_)`.
+        let other: ErrorCode = 12345i32.into();
+        assert_eq!(other, ErrorCode::Other(12345));
+        let back: i32 = other.into();
+        assert_eq!(back, 12345);
+    }
+
+    #[test]
+    fn error_constructors_set_expected_codes() {
+        assert_eq!(Error::parse_error().code, ErrorCode::ParseError);
+        assert_eq!(Error::invalid_request().code, ErrorCode::InvalidRequest);
+        assert_eq!(Error::method_not_found().code, ErrorCode::MethodNotFound);
+        assert_eq!(Error::invalid_params().code, ErrorCode::InvalidParams);
+        assert_eq!(Error::internal_error().code, ErrorCode::InternalError);
+        assert_eq!(Error::auth_required().code, ErrorCode::AuthRequired);
+    }
+
+    #[test]
+    fn error_display_uses_message_when_present() {
+        let err = Error::new(-32000, "boom");
+        assert_eq!(err.to_string(), "boom");
+    }
+
+    #[test]
+    fn error_display_falls_back_to_code_when_message_empty() {
+        // Empty message should not produce a blank string; the numeric code
+        // is the next-best identifier for log lines and panics.
+        let err = Error::new(-32600, "");
+        assert_eq!(err.to_string(), "-32600");
+    }
+
+    #[test]
+    fn error_display_appends_data() {
+        let err = Error::new(-32000, "boom").data(serde_json::json!({"k": "v"}));
+        let rendered = err.to_string();
+        assert!(
+            rendered.starts_with("boom: "),
+            "unexpected display: {rendered:?}"
+        );
+        // Pretty-printed JSON preserves the key/value pair regardless of
+        // whitespace formatting choices.
+        assert!(rendered.contains("\"k\""), "missing key in {rendered:?}");
+        assert!(rendered.contains("\"v\""), "missing value in {rendered:?}");
+    }
+
+    #[test]
+    fn resource_not_found_attaches_uri_when_given() {
+        let err = Error::resource_not_found(Some("file:///tmp/missing".into()));
+        assert_eq!(err.code, ErrorCode::ResourceNotFound);
+        assert_eq!(
+            err.data,
+            Some(serde_json::json!({"uri": "file:///tmp/missing"}))
+        );
+    }
+
+    #[test]
+    fn resource_not_found_omits_data_when_uri_missing() {
+        let err = Error::resource_not_found(None);
+        assert_eq!(err.code, ErrorCode::ResourceNotFound);
+        assert!(err.data.is_none());
+    }
+
+    #[test]
+    fn from_serde_json_error_is_invalid_params_with_message_in_data() {
+        // Triggering an actual serde error so behavior matches real usage.
+        let serde_err = serde_json::from_str::<i32>("not a number").unwrap_err();
+        let original_message = serde_err.to_string();
+
+        let err: Error = serde_err.into();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        // The original parse error message is preserved in `data` so callers
+        // can debug malformed requests; regressing this would silently lose
+        // root-cause info on the wire.
+        let data = err.data.expect("data should carry the serde message");
+        assert_eq!(data, serde_json::Value::String(original_message));
+    }
+
+    #[test]
+    fn into_internal_error_attaches_error_string() {
+        #[derive(Debug)]
+        struct MyErr;
+        impl std::fmt::Display for MyErr {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("kaboom")
+            }
+        }
+        impl std::error::Error for MyErr {}
+
+        let err = Error::into_internal_error(MyErr);
+        assert_eq!(err.code, ErrorCode::InternalError);
+        assert_eq!(err.data, Some(serde_json::Value::String("kaboom".into())));
+    }
+
+    #[test]
+    fn from_anyhow_downcasts_to_existing_acp_error() {
+        // anyhow may wrap an existing ACP `Error`; the conversion must
+        // unwrap it rather than re-wrapping as a generic internal error
+        // so the original code (e.g. AuthRequired) survives the round-trip.
+        let original = Error::auth_required().data(serde_json::json!({"hint": "log in"}));
+        let wrapped: anyhow::Error = anyhow::Error::new(original.clone());
+
+        let converted: Error = wrapped.into();
+        assert_eq!(converted, original);
+    }
+
+    #[test]
+    fn from_anyhow_falls_back_to_internal_error_for_foreign_types() {
+        let wrapped = anyhow::anyhow!("something went wrong");
+        let converted: Error = wrapped.into();
+        assert_eq!(converted.code, ErrorCode::InternalError);
+        // The anyhow display is preserved in `data` for debuggability.
+        assert_eq!(
+            converted.data,
+            Some(serde_json::Value::String("something went wrong".into()))
+        );
+    }
+
+    #[test]
+    fn error_serializes_to_jsonrpc_object_shape() {
+        // The wire shape `{code, message}` (and optional `data`) is part of
+        // the JSON-RPC contract; a regression would break every peer.
+        let err = Error::new(-32600, "Invalid request");
+        let v = serde_json::to_value(&err).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "code": -32600,
+                "message": "Invalid request",
+            })
+        );
+
+        let err = Error::new(-32602, "bad").data(serde_json::json!({"field": "id"}));
+        let v = serde_json::to_value(&err).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "code": -32602,
+                "message": "bad",
+                "data": {"field": "id"},
+            })
+        );
+    }
 }
