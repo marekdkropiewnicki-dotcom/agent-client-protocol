@@ -132,4 +132,72 @@ mod tests {
         let version: ProtocolVersion = serde_json::from_str(json).unwrap();
         assert_eq!(version, ProtocolVersion::new(65535));
     }
+
+    #[test]
+    fn test_serialize_to_integer() {
+        // The wire format MUST be a JSON number, not a string. This is
+        // load-bearing because peers using the old wire format (strings)
+        // are intentionally bucketed into V0 on the read path; if we
+        // start emitting strings here, every peer would silently downgrade.
+        assert_eq!(serde_json::to_string(&ProtocolVersion::V1).unwrap(), "1");
+        assert_eq!(serde_json::to_string(&ProtocolVersion::V0).unwrap(), "0");
+    }
+
+    #[test]
+    fn test_latest_is_v1() {
+        // LATEST must stay anchored to V1 even when V2 is feature-gated.
+        // Bumping LATEST is a breaking protocol change; this test makes
+        // sure that bump can't happen accidentally.
+        assert_eq!(ProtocolVersion::LATEST, ProtocolVersion::V1);
+    }
+
+    #[test]
+    fn test_ordering() {
+        // Ordering is used in capability negotiation; v0 must be the
+        // lowest sentinel so that peers with a strict "must be >= v1"
+        // check correctly reject v0 fallback responses.
+        assert!(ProtocolVersion::V0 < ProtocolVersion::V1);
+        assert!(ProtocolVersion::V1 > ProtocolVersion::V0);
+        assert_eq!(ProtocolVersion::V1, ProtocolVersion::new(1));
+    }
+
+    #[test]
+    fn test_display_formats_as_number() {
+        assert_eq!(ProtocolVersion::V1.to_string(), "1");
+        assert_eq!(ProtocolVersion::V0.to_string(), "0");
+    }
+
+    #[test]
+    fn test_deserialize_negative_number_errors() {
+        // Negative numbers must NOT silently fall through to V0 (which is
+        // reserved for string-based old-version peers). They are a hard
+        // protocol error.
+        let result: Result<ProtocolVersion, _> = serde_json::from_str("-1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_string_with_arbitrary_content_becomes_v0() {
+        // The string-fallback path is documented as "any string becomes
+        // V0". Verify a few non-numeric / non-semver inputs.
+        for input in ["\"\"", "\"abc\"", "\"v0.1.0\"", "\"1\""] {
+            let version: ProtocolVersion = serde_json::from_str(input).unwrap();
+            assert_eq!(
+                version,
+                ProtocolVersion::V0,
+                "input {input} should be coerced to V0"
+            );
+        }
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[test]
+    fn test_v2_constant_exists_and_orders_above_v1() {
+        // V2 is feature-gated and explicitly not the LATEST. This test
+        // pins both invariants so a contributor cannot accidentally
+        // promote V2 to LATEST in the future without removing this test.
+        assert_eq!(ProtocolVersion::V2, ProtocolVersion::new(2));
+        assert!(ProtocolVersion::V2 > ProtocolVersion::V1);
+        assert_ne!(ProtocolVersion::LATEST, ProtocolVersion::V2);
+    }
 }
