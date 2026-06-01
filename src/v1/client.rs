@@ -2397,7 +2397,9 @@ mod tests {
         use serde_json::value::RawValue;
         use std::sync::Arc;
 
-        let raw: Arc<RawValue> = RawValue::from_string("{\"k\":1}".to_string()).unwrap().into();
+        let raw: Arc<RawValue> = RawValue::from_string("{\"k\":1}".to_string())
+            .unwrap()
+            .into();
         let req = AgentRequest::ExtMethodRequest(ExtRequest::new("_custom/method", raw));
         assert_eq!(req.method(), "_custom/method");
     }
