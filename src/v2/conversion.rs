@@ -9456,6 +9456,41 @@ mod tests {
         assert_v1_round_trip::<v1::Error, v2::Error>(err);
     }
 
+    /// `logout` was stabilized in v0.13.x. Pin the v1<->v2 conversion so a
+    /// future field addition (e.g. a logout reason) to one side cannot
+    /// silently drop data when bridging the other.
+    #[test]
+    fn round_trips_logout_request_and_response() {
+        let request = v1::LogoutRequest::new();
+        assert_v1_round_trip::<v1::LogoutRequest, v2::LogoutRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LogoutRequest, v2::LogoutRequest>(request);
+
+        let response = v1::LogoutResponse::new();
+        assert_v1_round_trip::<v1::LogoutResponse, v2::LogoutResponse>(response.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LogoutResponse, v2::LogoutResponse>(response);
+    }
+
+    /// `AgentAuthCapabilities` is advertised during initialize and shapes
+    /// the rest of the session lifecycle (no logout method available if
+    /// the bridge drops the capability). Cover both the empty case and
+    /// the case where `logout` is opted in.
+    #[test]
+    fn round_trips_agent_auth_capabilities() {
+        let empty = v1::AgentAuthCapabilities::new();
+        assert_v1_round_trip::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(empty.clone());
+        assert_json_eq_after_v1_to_v2::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
+            empty,
+        );
+
+        let with_logout = v1::AgentAuthCapabilities::new().logout(v1::LogoutCapabilities::new());
+        assert_v1_round_trip::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
+            with_logout.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
+            with_logout,
+        );
+    }
+
     #[test]
     fn round_trips_v2_value_back_through_v1() {
         // Same coverage but starting from v2, to exercise IntoV1 explicitly.

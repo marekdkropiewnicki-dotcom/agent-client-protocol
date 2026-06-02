@@ -5646,6 +5646,88 @@ mod test_serialization {
         assert!(matches!(deserialized, AuthMethod::Agent(_)));
     }
 
+    /// `logout` is part of the stable protocol surface as of v0.13.x; pin
+    /// the wire name, the empty-object body shape, and the
+    /// `ClientRequest` dispatch so an accidental rename or wrapper change
+    /// is caught here instead of by downstream peers in the wild.
+    #[test]
+    fn test_logout_serialization() {
+        assert_eq!(AGENT_METHOD_NAMES.logout, "logout");
+        assert_eq!(
+            ClientRequest::LogoutRequest(LogoutRequest::new()).method(),
+            "logout"
+        );
+
+        // LogoutRequest / LogoutResponse carry only optional `_meta` so an
+        // empty value must round-trip through JSON unchanged.
+        let request = LogoutRequest::new();
+        let request_json = serde_json::to_value(&request).unwrap();
+        assert_eq!(request_json, json!({}));
+        let request_back: LogoutRequest = serde_json::from_value(request_json).unwrap();
+        assert_eq!(request, request_back);
+
+        let response = LogoutResponse::new();
+        let response_json = serde_json::to_value(&response).unwrap();
+        assert_eq!(response_json, json!({}));
+        let response_back: LogoutResponse = serde_json::from_value(response_json).unwrap();
+        assert_eq!(response, response_back);
+
+        // An agent that doesn't advertise logout sends `auth: {}`, not a
+        // payload containing an explicit `logout: null`, so older peers
+        // ignoring the field see a clean object.
+        assert_eq!(
+            serde_json::to_value(AgentAuthCapabilities::new()).unwrap(),
+            json!({})
+        );
+
+        // Supplying `logout: {}` is how an agent opts in to the method.
+        assert_eq!(
+            serde_json::to_value(AgentAuthCapabilities::new().logout(LogoutCapabilities::new()))
+                .unwrap(),
+            json!({ "logout": {} })
+        );
+    }
+
+    /// Explicit `null` and an omitted `logout` key are equivalent on the
+    /// wire; both must decode to `None` so unsupported-state detection is
+    /// independent of which form the peer chose to send.
+    #[test]
+    fn test_logout_capability_explicit_null_decodes_to_none() {
+        let with_null: AgentAuthCapabilities =
+            serde_json::from_value(json!({ "logout": null })).unwrap();
+        assert!(with_null.logout.is_none());
+
+        let omitted: AgentAuthCapabilities = serde_json::from_value(json!({})).unwrap();
+        assert!(omitted.logout.is_none());
+    }
+
+    /// `logout` uses `DefaultOnError`, so a peer that sends a malformed
+    /// value (e.g. a string instead of an object) must not poison the
+    /// entire `AgentAuthCapabilities` decode. We fall back to "not
+    /// supported" rather than failing the whole capability block.
+    #[test]
+    fn test_logout_capability_malformed_falls_back_to_none() {
+        let parsed: AgentAuthCapabilities =
+            serde_json::from_value(json!({ "logout": "bogus" })).unwrap();
+        assert!(parsed.logout.is_none());
+    }
+
+    /// `AgentCapabilities.auth` is a non-optional struct, so it always
+    /// appears on the wire. A round-trip from a value with `logout` set
+    /// must preserve the advertised capability through the full
+    /// initialization handshake shape.
+    #[test]
+    fn test_agent_capabilities_auth_logout_round_trip() {
+        let caps = AgentCapabilities::new()
+            .auth(AgentAuthCapabilities::new().logout(LogoutCapabilities::new()));
+
+        let json_value = serde_json::to_value(&caps).unwrap();
+        assert_eq!(json_value["auth"], json!({ "logout": {} }));
+
+        let parsed: AgentCapabilities = serde_json::from_value(json_value).unwrap();
+        assert!(parsed.auth.logout.is_some());
+    }
+
     #[cfg(feature = "unstable_session_delete")]
     #[test]
     fn test_session_delete_serialization() {
