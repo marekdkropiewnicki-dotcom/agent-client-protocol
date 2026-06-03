@@ -146,3 +146,97 @@ pub enum PlanEntryStatus {
     /// The task has been successfully completed.
     Completed,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn entry(content: &str, status: PlanEntryStatus) -> PlanEntry {
+        PlanEntry::new(content, PlanEntryPriority::Medium, status)
+    }
+
+    #[test]
+    fn plan_round_trip_preserves_entries_and_omits_optional_meta() {
+        let plan = Plan::new(vec![
+            entry("write tests", PlanEntryStatus::Completed),
+            entry("ship it", PlanEntryStatus::InProgress),
+        ]);
+
+        let json = serde_json::to_value(&plan).unwrap();
+        assert!(
+            !json.as_object().unwrap().contains_key("_meta"),
+            "meta must be omitted when None to keep the wire format compact"
+        );
+        let parsed: Plan = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, plan);
+    }
+
+    #[test]
+    fn plan_priority_and_status_use_snake_case_on_the_wire() {
+        let plan = Plan::new(vec![PlanEntry::new(
+            "do the thing",
+            PlanEntryPriority::High,
+            PlanEntryStatus::InProgress,
+        )]);
+        let json = serde_json::to_value(&plan).unwrap();
+        let only = &json["entries"][0];
+        assert_eq!(only["priority"], "high");
+        assert_eq!(
+            only["status"], "in_progress",
+            "snake_case is part of the wire contract"
+        );
+    }
+
+    #[test]
+    fn malformed_plan_entries_are_skipped_so_a_single_bad_row_does_not_kill_the_plan() {
+        let payload = json!({
+            "entries": [
+                {"content": "first", "priority": "low", "status": "pending"},
+                {"content": "second", "priority": "medium", "status": "from_the_future"},
+                {"content": "third", "priority": "high", "status": "completed"}
+            ]
+        });
+
+        let plan: Plan = serde_json::from_value(payload).unwrap();
+        assert_eq!(plan.entries.len(), 2);
+        assert_eq!(plan.entries[0].content, "first");
+        assert_eq!(plan.entries[1].content, "third");
+        assert_eq!(plan.entries[1].priority, PlanEntryPriority::High);
+    }
+
+    #[test]
+    fn plan_with_non_array_entries_falls_back_to_empty_entries() {
+        let payload = json!({
+            "entries": {"not": "an array"}
+        });
+        let plan: Plan = serde_json::from_value(payload).unwrap();
+        assert!(plan.entries.is_empty());
+    }
+
+    #[test]
+    fn plan_entry_unknown_priority_drops_only_that_entry() {
+        let payload = json!({
+            "entries": [
+                {"content": "keep", "priority": "low", "status": "pending"},
+                {"content": "drop", "priority": "ULTRA", "status": "pending"}
+            ]
+        });
+        let plan: Plan = serde_json::from_value(payload).unwrap();
+        assert_eq!(plan.entries.len(), 1);
+        assert_eq!(plan.entries[0].content, "keep");
+    }
+
+    #[test]
+    fn plan_entry_round_trips_with_meta() {
+        let mut meta = Meta::new();
+        meta.insert("source".into(), json!("planner-v2"));
+        let entry = PlanEntry::new("do work", PlanEntryPriority::Low, PlanEntryStatus::Pending)
+            .meta(Some(meta.clone()));
+
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["_meta"]["source"], "planner-v2");
+        let parsed: PlanEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, entry);
+    }
+}
