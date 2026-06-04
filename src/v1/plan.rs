@@ -145,3 +145,143 @@ pub enum PlanEntryStatus {
     /// The task has been successfully completed.
     Completed,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn pending_low(content: &str) -> PlanEntry {
+        PlanEntry::new(content, PlanEntryPriority::Low, PlanEntryStatus::Pending)
+    }
+
+    // ---- Wire format ----
+
+    #[test]
+    fn plan_entry_priority_serialization_is_snake_case() {
+        for (variant, expected) in [
+            (PlanEntryPriority::High, "high"),
+            (PlanEntryPriority::Medium, "medium"),
+            (PlanEntryPriority::Low, "low"),
+        ] {
+            let value = serde_json::to_value(&variant).unwrap();
+            assert_eq!(value, json!(expected));
+            let parsed: PlanEntryPriority = serde_json::from_value(json!(expected)).unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn plan_entry_status_serialization_is_snake_case() {
+        for (variant, expected) in [
+            (PlanEntryStatus::Pending, "pending"),
+            (PlanEntryStatus::InProgress, "in_progress"),
+            (PlanEntryStatus::Completed, "completed"),
+        ] {
+            let value = serde_json::to_value(&variant).unwrap();
+            assert_eq!(value, json!(expected));
+            let parsed: PlanEntryStatus = serde_json::from_value(json!(expected)).unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn plan_entry_priority_rejects_unknown_variants() {
+        // PlanEntryPriority is a closed enum without `#[serde(other)]`, so unknown
+        // priorities must fail to deserialize. This guards us from silently widening
+        // the public protocol surface.
+        let result: std::result::Result<PlanEntryPriority, _> =
+            serde_json::from_value(json!("urgent"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn plan_entry_round_trip_includes_required_fields() {
+        let entry = pending_low("Write tests");
+        let value = serde_json::to_value(&entry).unwrap();
+        // Each entry must always emit content, priority, and status — these are required
+        // for the client to render the plan correctly.
+        let map = value.as_object().unwrap();
+        assert_eq!(map["content"], "Write tests");
+        assert_eq!(map["priority"], "low");
+        assert_eq!(map["status"], "pending");
+        assert!(!map.contains_key("_meta"));
+
+        let parsed: PlanEntry = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, entry);
+    }
+
+    #[test]
+    fn plan_omits_meta_when_none_and_includes_when_set() {
+        let plan = Plan::new(vec![pending_low("step 1")]);
+        let value = serde_json::to_value(&plan).unwrap();
+        assert!(!value.as_object().unwrap().contains_key("_meta"));
+
+        let mut meta = Meta::new();
+        meta.insert("trace".to_string(), json!("abc"));
+        let plan_with_meta = Plan::new(vec![pending_low("step 1")]).meta(meta.clone());
+        let value = serde_json::to_value(&plan_with_meta).unwrap();
+        assert_eq!(value["_meta"]["trace"], "abc");
+    }
+
+    // ---- Tolerance: malformed entries ----
+
+    #[test]
+    fn plan_drops_individual_malformed_entries() {
+        // `entries` uses DefaultOnError<VecSkipError<...>>, so per-element failures
+        // (wrong shape, unknown enum, missing required field) must be skipped while
+        // good entries survive — this is critical for forward-compat with future
+        // priority/status values.
+        let value = json!({
+            "entries": [
+                {"content": "ok", "priority": "high", "status": "pending"},
+                "not an object at all",
+                {"content": "missing fields"},
+                {"content": "bad priority", "priority": "urgent", "status": "pending"},
+                {"content": "also ok", "priority": "low", "status": "completed"}
+            ]
+        });
+        let plan: Plan = serde_json::from_value(value).unwrap();
+        assert_eq!(plan.entries.len(), 2);
+        assert_eq!(plan.entries[0].content, "ok");
+        assert_eq!(plan.entries[1].content, "also ok");
+    }
+
+    #[test]
+    fn plan_with_outer_shape_error_falls_back_to_empty() {
+        // DefaultOnError swallows outer shape errors when the field is present but
+        // the wrong type — an explicit null or wrong outer type must produce an
+        // empty plan rather than a deserialization failure.
+        let cases = [
+            json!({"entries": null}),
+            json!({"entries": "not an array"}),
+            json!({"entries": {"k": "v"}}),
+        ];
+        for v in cases {
+            let plan: Plan = serde_json::from_value(v.clone()).unwrap();
+            assert!(plan.entries.is_empty(), "expected empty plan for {v}");
+        }
+    }
+
+    #[test]
+    fn plan_with_missing_entries_field_is_an_error() {
+        // `entries` is required (no `#[serde(default)]`), so a payload that omits the
+        // field altogether must surface a parse error — `DefaultOnError` only catches
+        // wrong-type values for a present field. Locking this in protects against an
+        // accidental change that would silently accept malformed plans.
+        let result: std::result::Result<Plan, _> = serde_json::from_value(json!({}));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn plan_entry_meta_is_optional_and_absent_by_default() {
+        let entry = pending_low("c");
+        assert!(entry.meta.is_none());
+
+        let mut meta = Meta::new();
+        meta.insert("k".into(), json!(1));
+        let with_meta = pending_low("c").meta(meta);
+        let value = serde_json::to_value(&with_meta).unwrap();
+        assert_eq!(value["_meta"]["k"], 1);
+    }
+}
