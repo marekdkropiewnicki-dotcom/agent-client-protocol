@@ -370,4 +370,151 @@ mod tests {
             );
         }
     }
+
+    // ---- Constructor helpers ----
+
+    #[test]
+    fn standard_error_constructors_carry_canonical_codes_and_messages() {
+        // Each helper must produce the canonical (code, message) pair so callers and
+        // peers see consistent error identities on the wire.
+        for (err, expected_code) in [
+            (Error::parse_error(), -32700),
+            (Error::invalid_request(), -32600),
+            (Error::method_not_found(), -32601),
+            (Error::invalid_params(), -32602),
+            (Error::internal_error(), -32603),
+            (Error::auth_required(), -32000),
+        ] {
+            assert_eq!(i32::from(err.code), expected_code);
+            assert!(
+                !err.message.is_empty(),
+                "error code {expected_code} must carry a message"
+            );
+            assert!(err.data.is_none());
+        }
+    }
+
+    #[test]
+    fn resource_not_found_with_uri_attaches_uri_data() {
+        let err = Error::resource_not_found(Some("file:///missing.txt".into()));
+        assert_eq!(i32::from(err.code), -32002);
+        let data = err.data.expect("uri must be attached as data");
+        assert_eq!(data["uri"], "file:///missing.txt");
+    }
+
+    #[test]
+    fn resource_not_found_without_uri_omits_data() {
+        let err = Error::resource_not_found(None);
+        assert_eq!(i32::from(err.code), -32002);
+        assert!(err.data.is_none());
+    }
+
+    #[test]
+    fn data_builder_attaches_extra_information() {
+        let err = Error::internal_error().data(serde_json::json!({"hint": "retry"}));
+        assert_eq!(err.data.unwrap()["hint"], "retry");
+    }
+
+    #[test]
+    fn into_internal_error_attaches_string_representation() {
+        let inner = std::io::Error::new(std::io::ErrorKind::Other, "boom");
+        let err = Error::into_internal_error(&inner);
+        assert_eq!(i32::from(err.code), -32603);
+        assert_eq!(err.data.unwrap(), serde_json::Value::String("boom".into()));
+    }
+
+    // ---- Display branches ----
+
+    #[test]
+    fn display_uses_message_when_present() {
+        let err = Error::invalid_params();
+        let s = err.to_string();
+        assert!(s.contains("Invalid params"), "got {s:?}");
+        // No data attached -> no trailing colon.
+        assert!(!s.contains(':'), "got {s:?}");
+    }
+
+    #[test]
+    fn display_falls_back_to_numeric_code_for_empty_message() {
+        // The `Display` impl explicitly handles the empty-message branch by writing the
+        // numeric code instead. Confirm this so we don't render an empty error to users.
+        let err = Error {
+            code: ErrorCode::Other(-1),
+            message: String::new(),
+            data: None,
+        };
+        assert_eq!(err.to_string(), "-1");
+    }
+
+    #[test]
+    fn display_appends_pretty_data_when_present() {
+        let err = Error::internal_error().data(serde_json::json!({"why": "boom"}));
+        let s = err.to_string();
+        assert!(s.starts_with("Internal error: "), "got {s:?}");
+        assert!(s.contains("\"why\""), "got {s:?}");
+        assert!(s.contains("\"boom\""), "got {s:?}");
+    }
+
+    #[test]
+    fn display_appends_data_when_message_is_empty() {
+        let err = Error {
+            code: ErrorCode::Other(-99),
+            message: String::new(),
+            data: Some(serde_json::json!("payload")),
+        };
+        // Empty-message + data branch: numeric code first, then the rendered data.
+        assert_eq!(err.to_string(), "-99: \"payload\"");
+    }
+
+    // ---- Error code <-> i32 round trip ----
+
+    #[test]
+    fn error_code_round_trips_through_i32() {
+        for code in ErrorCode::iter() {
+            let n = i32::from(code);
+            let back = ErrorCode::from(n);
+            assert_eq!(back, code, "code {n} did not round-trip");
+        }
+
+        // Codes outside the documented set must collapse to `Other` rather than
+        // failing — protocol peers occasionally send unknown codes and we must
+        // tolerate them.
+        assert_eq!(ErrorCode::from(12345), ErrorCode::Other(12345));
+        assert_eq!(i32::from(ErrorCode::Other(12345)), 12345);
+    }
+
+    // ---- From<serde_json::Error> ----
+
+    #[test]
+    fn from_serde_json_error_is_invalid_params_with_data() {
+        let json_err: serde_json::Error = serde_json::from_str::<i32>("not-a-number").unwrap_err();
+        let err: Error = json_err.into();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        assert!(
+            err.data.is_some(),
+            "serde error message must propagate as data"
+        );
+    }
+
+    // ---- From<anyhow::Error> ----
+
+    #[test]
+    fn from_anyhow_with_acp_error_preserves_original() {
+        let original = Error::auth_required().data(serde_json::json!("login"));
+        let any: anyhow::Error = original.clone().into();
+        let recovered: Error = any.into();
+        assert_eq!(recovered, original);
+    }
+
+    #[test]
+    fn from_anyhow_with_other_error_collapses_to_internal() {
+        let any = anyhow::anyhow!("something went wrong");
+        let err: Error = any.into();
+        assert_eq!(err.code, ErrorCode::InternalError);
+        let data = err.data.expect("inner error must propagate as data");
+        assert!(
+            data.as_str().unwrap().contains("something went wrong"),
+            "got {data:?}"
+        );
+    }
 }
