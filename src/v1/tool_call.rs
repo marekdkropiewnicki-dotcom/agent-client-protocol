@@ -672,3 +672,310 @@ impl ToolCallLocation {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ErrorCode;
+    use serde_json::json;
+
+    // ---- ToolCallUpdate -> ToolCall conversion ----
+
+    #[test]
+    fn try_from_update_with_title_succeeds() {
+        let update = ToolCallUpdate::new(
+            "call-1",
+            ToolCallUpdateFields::new()
+                .title("Read foo.rs")
+                .kind(ToolKind::Read)
+                .status(ToolCallStatus::InProgress),
+        );
+
+        let call: ToolCall = update.try_into().expect("update with title should convert");
+        assert_eq!(call.tool_call_id, ToolCallId::new("call-1"));
+        assert_eq!(call.title, "Read foo.rs");
+        assert_eq!(call.kind, ToolKind::Read);
+        assert_eq!(call.status, ToolCallStatus::InProgress);
+        assert!(call.content.is_empty());
+        assert!(call.locations.is_empty());
+        assert!(call.raw_input.is_none());
+        assert!(call.raw_output.is_none());
+    }
+
+    #[test]
+    fn try_from_update_missing_title_returns_invalid_params() {
+        let update = ToolCallUpdate::new(
+            "call-2",
+            ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+        );
+
+        let err: Error = ToolCall::try_from(update).expect_err("missing title must error");
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        // The error data must mention the offending field so callers can surface a useful message.
+        let data = err.data.expect("error must include data");
+        assert!(
+            data.to_string().contains("title"),
+            "expected data to mention title, got {data}"
+        );
+    }
+
+    #[test]
+    fn try_from_update_uses_defaults_for_missing_kind_and_status() {
+        let update = ToolCallUpdate::new("call-3", ToolCallUpdateFields::new().title("Something"));
+
+        let call = ToolCall::try_from(update).unwrap();
+        assert_eq!(call.kind, ToolKind::default());
+        assert_eq!(call.status, ToolCallStatus::default());
+    }
+
+    #[test]
+    fn tool_call_into_update_round_trips_back() {
+        let original = ToolCall::new("call-rt", "Run tests")
+            .kind(ToolKind::Execute)
+            .status(ToolCallStatus::Completed)
+            .raw_input(json!({"cmd": "cargo test"}))
+            .raw_output(json!({"exit_code": 0}))
+            .content(vec![ToolCallContent::from("done".to_string())])
+            .locations(vec![ToolCallLocation::new("/repo/src/lib.rs").line(42)]);
+
+        let update: ToolCallUpdate = original.clone().into();
+        // The round-trip should preserve the id and lossless title for ToolCall reconstruction.
+        let rebuilt: ToolCall = update.try_into().expect("round-trip must succeed");
+
+        assert_eq!(rebuilt, original);
+    }
+
+    // ---- ToolCall::update merge semantics ----
+
+    #[test]
+    fn update_only_applies_set_fields() {
+        let mut call = ToolCall::new("c1", "original title")
+            .kind(ToolKind::Read)
+            .status(ToolCallStatus::InProgress);
+
+        // Only update title; everything else must be untouched.
+        call.update(ToolCallUpdateFields::new().title("new title"));
+        assert_eq!(call.title, "new title");
+        assert_eq!(call.kind, ToolKind::Read);
+        assert_eq!(call.status, ToolCallStatus::InProgress);
+    }
+
+    #[test]
+    fn update_overwrites_collections_not_extends() {
+        let initial_locations = vec![ToolCallLocation::new("/a"), ToolCallLocation::new("/b")];
+        let initial_content = vec![ToolCallContent::from("first".to_string())];
+        let mut call = ToolCall::new("c2", "title")
+            .locations(initial_locations)
+            .content(initial_content);
+
+        let new_locations = vec![ToolCallLocation::new("/c")];
+        let new_content = vec![ToolCallContent::from("second".to_string())];
+        call.update(
+            ToolCallUpdateFields::new()
+                .locations(new_locations.clone())
+                .content(new_content.clone()),
+        );
+
+        // Per the spec, collections are replaced (not extended).
+        assert_eq!(call.locations, new_locations);
+        assert_eq!(call.content, new_content);
+    }
+
+    #[test]
+    fn update_with_empty_fields_is_noop() {
+        let original = ToolCall::new("c3", "stable")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Failed)
+            .raw_input(json!({"x": 1}));
+        let mut call = original.clone();
+
+        call.update(ToolCallUpdateFields::new());
+
+        assert_eq!(call, original);
+    }
+
+    // ---- ToolKind / ToolCallStatus serde behavior ----
+
+    #[test]
+    fn tool_kind_default_is_skipped_in_serialization() {
+        let call = ToolCall::new("c", "t"); // kind defaults to Other, status to Pending
+        let value = serde_json::to_value(&call).unwrap();
+        let map = value.as_object().unwrap();
+        assert!(
+            !map.contains_key("kind"),
+            "default ToolKind::Other must be omitted from wire format"
+        );
+        assert!(
+            !map.contains_key("status"),
+            "default ToolCallStatus::Pending must be omitted from wire format"
+        );
+    }
+
+    #[test]
+    fn tool_kind_unknown_variant_falls_back_to_other() {
+        // Forward-compat: an unknown ToolKind in JSON must deserialize to Other rather than failing.
+        let call: ToolCall = serde_json::from_value(json!({
+            "toolCallId": "c",
+            "title": "t",
+            "kind": "some_future_kind"
+        }))
+        .unwrap();
+        assert_eq!(call.kind, ToolKind::Other);
+    }
+
+    #[test]
+    fn tool_kind_known_variants_round_trip() {
+        for (kind, expected) in [
+            (ToolKind::Read, "read"),
+            (ToolKind::Edit, "edit"),
+            (ToolKind::Delete, "delete"),
+            (ToolKind::Move, "move"),
+            (ToolKind::Search, "search"),
+            (ToolKind::Execute, "execute"),
+            (ToolKind::Think, "think"),
+            (ToolKind::Fetch, "fetch"),
+            (ToolKind::SwitchMode, "switch_mode"),
+            (ToolKind::Other, "other"),
+        ] {
+            let v = serde_json::to_value(kind).unwrap();
+            assert_eq!(v, json!(expected), "serialize {kind:?}");
+            let parsed: ToolKind = serde_json::from_value(json!(expected)).unwrap();
+            assert_eq!(parsed, kind, "deserialize {expected}");
+        }
+    }
+
+    #[test]
+    fn tool_call_status_known_variants_round_trip() {
+        for (status, expected) in [
+            (ToolCallStatus::Pending, "pending"),
+            (ToolCallStatus::InProgress, "in_progress"),
+            (ToolCallStatus::Completed, "completed"),
+            (ToolCallStatus::Failed, "failed"),
+        ] {
+            let v = serde_json::to_value(status).unwrap();
+            assert_eq!(v, json!(expected));
+            let parsed: ToolCallStatus = serde_json::from_value(json!(expected)).unwrap();
+            assert_eq!(parsed, status);
+        }
+    }
+
+    // ---- Tolerance: ToolCallUpdateFields swallows malformed enum + collection values ----
+
+    #[test]
+    fn update_fields_tolerates_unknown_status_in_wire_format() {
+        // ToolCallUpdateFields uses DefaultOnError for kind/status: if a peer sends an
+        // unknown status string, we must not blow up — the field should fall back to None
+        // so the rest of the update still applies.
+        let value = json!({
+            "toolCallId": "c",
+            "title": "still applies",
+            "status": "garbage_status"
+        });
+        let update: ToolCallUpdate = serde_json::from_value(value).unwrap();
+        assert_eq!(update.fields.title.as_deref(), Some("still applies"));
+        // ToolKind has #[serde(other)], so unknown still parses; ToolCallStatus does not,
+        // so DefaultOnError must turn it into None.
+        assert_eq!(update.fields.status, None);
+    }
+
+    #[test]
+    fn update_fields_tolerates_malformed_outer_collections() {
+        // `content` and `locations` use DefaultOnError<Option<VecSkipError<...>>> so that
+        // wrong outer types collapse to None instead of blowing up the whole update.
+        let value = json!({
+            "toolCallId": "c",
+            "title": "ok",
+            "content": "not an array",
+            "locations": {"oops": true}
+        });
+        let update: ToolCallUpdate = serde_json::from_value(value).unwrap();
+        assert_eq!(update.fields.content, None);
+        assert_eq!(update.fields.locations, None);
+        assert_eq!(update.fields.title.as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn tool_call_skips_malformed_locations_per_element() {
+        // ToolCall uses DefaultOnError<VecSkipError<...>> for locations: bad entries are
+        // dropped element-by-element while good ones survive.
+        let value = json!({
+            "toolCallId": "c",
+            "title": "ok",
+            "locations": [
+                {"path": "/good/path"},
+                "this is not a location",
+                {"path": "/another/good/path", "line": 7}
+            ]
+        });
+        let call: ToolCall = serde_json::from_value(value).unwrap();
+        assert_eq!(call.locations.len(), 2);
+        assert_eq!(call.locations[0].path, PathBuf::from("/good/path"));
+        assert_eq!(call.locations[1].path, PathBuf::from("/another/good/path"));
+        assert_eq!(call.locations[1].line, Some(7));
+    }
+
+    // ---- ToolCallContent ----
+
+    #[test]
+    fn tool_call_content_diff_serializes_with_type_tag() {
+        let diff = Diff::new("/file.rs", "new").old_text("old".to_string());
+        let content = ToolCallContent::Diff(diff);
+        let value = serde_json::to_value(&content).unwrap();
+        assert_eq!(value["type"], "diff");
+        assert_eq!(value["path"], "/file.rs");
+        assert_eq!(value["oldText"], "old");
+        assert_eq!(value["newText"], "new");
+    }
+
+    #[test]
+    fn diff_for_new_file_omits_old_text_field() {
+        // For a brand-new file, old_text is None, and the wire format must omit the key
+        // so consumers can distinguish "new file" from "empty original content".
+        let diff = Diff::new("/created.rs", "fresh");
+        let value = serde_json::to_value(&diff).unwrap();
+        let map = value.as_object().unwrap();
+        assert!(!map.contains_key("oldText"));
+        assert_eq!(map["newText"], "fresh");
+    }
+
+    #[test]
+    fn tool_call_content_terminal_serializes_with_type_tag() {
+        let terminal = Terminal::new("term-7");
+        let content = ToolCallContent::Terminal(terminal);
+        let value = serde_json::to_value(&content).unwrap();
+        assert_eq!(value["type"], "terminal");
+        assert_eq!(value["terminalId"], "term-7");
+    }
+
+    #[test]
+    fn tool_call_content_text_via_from_uses_content_variant() {
+        // From<T: Into<ContentBlock>> wraps a string into a ContentBlock::Text and then
+        // into ToolCallContent::Content. Verify both layers serialize correctly.
+        let content: ToolCallContent = "hello".to_string().into();
+        let value = serde_json::to_value(&content).unwrap();
+        // The Content variant is tag = "content"; the inner ContentBlock is also tagged with type=text.
+        assert_eq!(value["type"], "content");
+        assert_eq!(value["content"]["type"], "text");
+        assert_eq!(value["content"]["text"], "hello");
+    }
+
+    // ---- ToolCallId ----
+
+    #[test]
+    fn tool_call_id_display_and_constructors() {
+        let id = ToolCallId::new("abc");
+        assert_eq!(id.to_string(), "abc");
+
+        let from_str: ToolCallId = "xyz".into();
+        assert_eq!(from_str, ToolCallId::new("xyz"));
+
+        let from_string: ToolCallId = String::from("123").into();
+        assert_eq!(from_string, ToolCallId::new("123"));
+    }
+
+    #[test]
+    fn tool_call_id_into_option_for_str_wraps_in_some() {
+        let opt: Option<ToolCallId> = "wrapped".into_option();
+        assert_eq!(opt, Some(ToolCallId::new("wrapped")));
+    }
+}
