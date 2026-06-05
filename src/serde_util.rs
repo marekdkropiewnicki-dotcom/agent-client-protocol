@@ -822,4 +822,466 @@ mod tests {
         value = MaybeUndefined::Value(Err("error"));
         assert_eq!(value.transpose(), Err("error"));
     }
+
+    #[test]
+    fn test_maybe_undefined_default_is_undefined() {
+        assert_eq!(
+            MaybeUndefined::<i32>::default(),
+            MaybeUndefined::<i32>::Undefined
+        );
+        assert_eq!(
+            MaybeUndefined::<String>::default(),
+            MaybeUndefined::<String>::Undefined
+        );
+    }
+
+    #[test]
+    fn test_maybe_undefined_predicates() {
+        // is_undefined
+        assert!(MaybeUndefined::<i32>::Undefined.is_undefined());
+        assert!(!MaybeUndefined::<i32>::Null.is_undefined());
+        assert!(!MaybeUndefined::<i32>::Value(7).is_undefined());
+
+        // is_null
+        assert!(!MaybeUndefined::<i32>::Undefined.is_null());
+        assert!(MaybeUndefined::<i32>::Null.is_null());
+        assert!(!MaybeUndefined::<i32>::Value(7).is_null());
+
+        // is_value
+        assert!(!MaybeUndefined::<i32>::Undefined.is_value());
+        assert!(!MaybeUndefined::<i32>::Null.is_value());
+        assert!(MaybeUndefined::<i32>::Value(7).is_value());
+    }
+
+    #[test]
+    fn test_maybe_undefined_value_borrow() {
+        let undefined: MaybeUndefined<i32> = MaybeUndefined::Undefined;
+        assert_eq!(undefined.value(), None);
+
+        let null: MaybeUndefined<i32> = MaybeUndefined::Null;
+        assert_eq!(null.value(), None);
+
+        let v = MaybeUndefined::Value(42);
+        assert_eq!(v.value(), Some(&42));
+
+        // Borrow does not consume.
+        assert_eq!(v.value(), Some(&42));
+    }
+
+    #[test]
+    fn test_maybe_undefined_take() {
+        assert_eq!(MaybeUndefined::<i32>::Undefined.take(), None);
+        assert_eq!(MaybeUndefined::<i32>::Null.take(), None);
+        assert_eq!(MaybeUndefined::<i32>::Value(13).take(), Some(13));
+    }
+
+    #[test]
+    fn test_maybe_undefined_update_to() {
+        // Value overwrites Option.
+        let mut slot: Option<i32> = None;
+        MaybeUndefined::Value(10).update_to(&mut slot);
+        assert_eq!(slot, Some(10));
+
+        // Undefined leaves Option untouched.
+        MaybeUndefined::<i32>::Undefined.update_to(&mut slot);
+        assert_eq!(slot, Some(10));
+
+        // Null clears Option.
+        MaybeUndefined::<i32>::Null.update_to(&mut slot);
+        assert_eq!(slot, None);
+
+        // Null on already-None remains None.
+        MaybeUndefined::<i32>::Null.update_to(&mut slot);
+        assert_eq!(slot, None);
+
+        // Undefined on None remains None.
+        MaybeUndefined::<i32>::Undefined.update_to(&mut slot);
+        assert_eq!(slot, None);
+
+        // Value overwrites an existing value.
+        slot = Some(1);
+        MaybeUndefined::Value(99).update_to(&mut slot);
+        assert_eq!(slot, Some(99));
+    }
+
+    #[test]
+    fn test_maybe_undefined_from_nested_option() {
+        // Mirror of test_maybe_undefined_to_nested_option: round-trip the
+        // canonical lossless encoding.
+        assert_eq!(
+            MaybeUndefined::<i32>::from(None),
+            MaybeUndefined::<i32>::Undefined
+        );
+        assert_eq!(
+            MaybeUndefined::<i32>::from(Some(None)),
+            MaybeUndefined::<i32>::Null
+        );
+        assert_eq!(
+            MaybeUndefined::<i32>::from(Some(Some(7))),
+            MaybeUndefined::<i32>::Value(7)
+        );
+
+        // Round-trip through both directions.
+        let cases = [
+            MaybeUndefined::<i32>::Undefined,
+            MaybeUndefined::<i32>::Null,
+            MaybeUndefined::<i32>::Value(123),
+        ];
+        for original in cases {
+            let nested: Option<Option<i32>> = original.into();
+            let back: MaybeUndefined<i32> = nested.into();
+            assert_eq!(back, original);
+        }
+    }
+
+    #[test]
+    fn test_maybe_undefined_standalone_serialize() {
+        // Value serializes transparently as its inner value.
+        assert_eq!(to_value(MaybeUndefined::Value(7i32)).unwrap(), json!(7));
+
+        // Null serializes as JSON null.
+        assert_eq!(
+            to_value(MaybeUndefined::<i32>::Null).unwrap(),
+            serde_json::Value::Null
+        );
+
+        // Undefined uses `serialize_unit`, which `serde_json` represents as
+        // null at the value layer. The user-facing behavior — preventing the
+        // field from appearing in an object — is exercised in
+        // `test_maybe_undefined_serde` via `skip_serializing_if`.
+        assert_eq!(
+            to_value(MaybeUndefined::<i32>::Undefined).unwrap(),
+            serde_json::Value::Null
+        );
+    }
+}
+
+#[cfg(test)]
+mod into_option_tests {
+    //! Coverage for every concrete [`IntoOption`] impl. These traits power
+    //! the ergonomic builder methods generated across every protocol type, so
+    //! a silent regression here would degrade the SDK surface broadly.
+
+    use std::{
+        borrow::Cow,
+        path::{Path, PathBuf},
+        sync::Arc,
+    };
+
+    use serde_json::Value;
+
+    use super::IntoOption;
+
+    #[test]
+    fn option_passthrough() {
+        // Option<T> implementations forward unchanged.
+        let some: Option<i32> = Some(5);
+        assert_eq!(IntoOption::<i32>::into_option(some), Some(5));
+
+        let none: Option<i32> = None;
+        assert_eq!(IntoOption::<i32>::into_option(none), None);
+    }
+
+    #[test]
+    fn bare_value_wraps_in_some() {
+        // Generic `T: IntoOption<T>` blanket impl wraps any bare value.
+        assert_eq!(IntoOption::<i32>::into_option(7), Some(7));
+        assert_eq!(
+            IntoOption::<bool>::into_option(false),
+            Some(false),
+            "bare false must wrap to Some(false), not collapse to None",
+        );
+    }
+
+    #[test]
+    fn string_from_str_variants() {
+        // &str
+        let s: &str = "abc";
+        assert_eq!(IntoOption::<String>::into_option(s), Some("abc".into()));
+
+        // &mut str
+        let mut owned = String::from("def");
+        let m: &mut str = owned.as_mut_str();
+        assert_eq!(IntoOption::<String>::into_option(m), Some("def".into()));
+
+        // &String
+        let s = String::from("ghi");
+        assert_eq!(IntoOption::<String>::into_option(&s), Some("ghi".into()));
+
+        // Box<str>
+        let b: Box<str> = "jkl".into();
+        assert_eq!(IntoOption::<String>::into_option(b), Some("jkl".into()));
+
+        // Cow<str> (borrowed and owned arms)
+        let borrowed: Cow<'static, str> = Cow::Borrowed("mno");
+        assert_eq!(
+            IntoOption::<String>::into_option(borrowed),
+            Some("mno".into())
+        );
+        let owned_cow: Cow<'static, str> = Cow::Owned(String::from("pqr"));
+        assert_eq!(
+            IntoOption::<String>::into_option(owned_cow),
+            Some("pqr".into())
+        );
+
+        // Arc<str>
+        let a: Arc<str> = Arc::from("stu");
+        assert_eq!(IntoOption::<String>::into_option(a), Some("stu".into()));
+    }
+
+    #[test]
+    fn pathbuf_from_str_like_references() {
+        // &str (via AsRef<OsStr>)
+        let s: &str = "/tmp/x";
+        assert_eq!(
+            IntoOption::<PathBuf>::into_option(s),
+            Some(PathBuf::from("/tmp/x"))
+        );
+
+        // &String (via AsRef<OsStr>)
+        let owned = String::from("/tmp/y");
+        assert_eq!(
+            IntoOption::<PathBuf>::into_option(&owned),
+            Some(PathBuf::from("/tmp/y"))
+        );
+
+        // &Path (via AsRef<OsStr>)
+        let p: &Path = Path::new("/tmp/z");
+        assert_eq!(
+            IntoOption::<PathBuf>::into_option(p),
+            Some(PathBuf::from("/tmp/z"))
+        );
+    }
+
+    #[test]
+    fn pathbuf_from_owned_pointers() {
+        // Box<Path>
+        let b: Box<Path> = PathBuf::from("/tmp/a").into_boxed_path();
+        assert_eq!(
+            IntoOption::<PathBuf>::into_option(b),
+            Some(PathBuf::from("/tmp/a"))
+        );
+
+        // Cow<Path> (borrowed and owned arms)
+        let borrowed: Cow<'static, Path> = Cow::Borrowed(Path::new("/tmp/b"));
+        assert_eq!(
+            IntoOption::<PathBuf>::into_option(borrowed),
+            Some(PathBuf::from("/tmp/b"))
+        );
+        let owned: Cow<'static, Path> = Cow::Owned(PathBuf::from("/tmp/c"));
+        assert_eq!(
+            IntoOption::<PathBuf>::into_option(owned),
+            Some(PathBuf::from("/tmp/c"))
+        );
+    }
+
+    #[test]
+    fn json_value_from_strings() {
+        // &str
+        let s: &str = "hello";
+        assert_eq!(
+            IntoOption::<Value>::into_option(s),
+            Some(Value::String("hello".into()))
+        );
+
+        // String
+        let owned = String::from("hi");
+        assert_eq!(
+            IntoOption::<Value>::into_option(owned),
+            Some(Value::String("hi".into()))
+        );
+
+        // Cow<str> (borrowed and owned arms)
+        let borrowed: Cow<'static, str> = Cow::Borrowed("bye");
+        assert_eq!(
+            IntoOption::<Value>::into_option(borrowed),
+            Some(Value::String("bye".into()))
+        );
+        let owned_cow: Cow<'static, str> = Cow::Owned(String::from("ciao"));
+        assert_eq!(
+            IntoOption::<Value>::into_option(owned_cow),
+            Some(Value::String("ciao".into()))
+        );
+    }
+}
+
+#[cfg(test)]
+mod into_maybe_undefined_tests {
+    //! Coverage for every concrete [`IntoMaybeUndefined`] impl. These traits
+    //! gate every nullable builder argument on the protocol types.
+
+    use std::{
+        borrow::Cow,
+        path::{Path, PathBuf},
+        sync::Arc,
+    };
+
+    use serde_json::Value;
+
+    use super::{IntoMaybeUndefined, MaybeUndefined};
+
+    #[test]
+    fn bare_value_becomes_value_variant() {
+        assert_eq!(
+            IntoMaybeUndefined::<i32>::into_maybe_undefined(7),
+            MaybeUndefined::Value(7),
+        );
+        assert_eq!(
+            IntoMaybeUndefined::<bool>::into_maybe_undefined(false),
+            MaybeUndefined::Value(false),
+            "bare false must become Value(false), not Null",
+        );
+    }
+
+    #[test]
+    fn option_some_becomes_value_none_becomes_null() {
+        let some: Option<i32> = Some(5);
+        assert_eq!(some.into_maybe_undefined(), MaybeUndefined::Value(5));
+
+        let none: Option<i32> = None;
+        // Critical: per the documented contract, `Option::None` collapses to
+        // `Null`, *not* `Undefined`. Builder callers wanting to leave the
+        // field undefined must pass `MaybeUndefined::Undefined` directly.
+        assert_eq!(none.into_maybe_undefined(), MaybeUndefined::<i32>::Null);
+    }
+
+    #[test]
+    fn maybe_undefined_is_identity() {
+        // Passing a MaybeUndefined through must be lossless across all three
+        // variants — otherwise builders would clobber explicit Undefined.
+        let cases = [
+            MaybeUndefined::<i32>::Undefined,
+            MaybeUndefined::<i32>::Null,
+            MaybeUndefined::<i32>::Value(7),
+        ];
+        for c in cases {
+            assert_eq!(c.into_maybe_undefined(), c);
+        }
+    }
+
+    #[test]
+    fn string_from_str_variants() {
+        // &str
+        let s: &str = "abc";
+        assert_eq!(
+            IntoMaybeUndefined::<String>::into_maybe_undefined(s),
+            MaybeUndefined::Value("abc".into())
+        );
+
+        // &mut str
+        let mut owned = String::from("def");
+        let m: &mut str = owned.as_mut_str();
+        assert_eq!(
+            IntoMaybeUndefined::<String>::into_maybe_undefined(m),
+            MaybeUndefined::Value("def".into())
+        );
+
+        // &String
+        let s = String::from("ghi");
+        assert_eq!(
+            IntoMaybeUndefined::<String>::into_maybe_undefined(&s),
+            MaybeUndefined::Value("ghi".into())
+        );
+
+        // Box<str>
+        let b: Box<str> = "jkl".into();
+        assert_eq!(
+            IntoMaybeUndefined::<String>::into_maybe_undefined(b),
+            MaybeUndefined::Value("jkl".into())
+        );
+
+        // Cow<str> (borrowed and owned arms)
+        let borrowed: Cow<'static, str> = Cow::Borrowed("mno");
+        assert_eq!(
+            IntoMaybeUndefined::<String>::into_maybe_undefined(borrowed),
+            MaybeUndefined::Value("mno".into())
+        );
+        let owned_cow: Cow<'static, str> = Cow::Owned(String::from("pqr"));
+        assert_eq!(
+            IntoMaybeUndefined::<String>::into_maybe_undefined(owned_cow),
+            MaybeUndefined::Value("pqr".into())
+        );
+
+        // Arc<str>
+        let a: Arc<str> = Arc::from("stu");
+        assert_eq!(
+            IntoMaybeUndefined::<String>::into_maybe_undefined(a),
+            MaybeUndefined::Value("stu".into())
+        );
+    }
+
+    #[test]
+    fn pathbuf_from_str_like_references() {
+        // &str (via AsRef<OsStr>)
+        let s: &str = "/tmp/x";
+        assert_eq!(
+            IntoMaybeUndefined::<PathBuf>::into_maybe_undefined(s),
+            MaybeUndefined::Value(PathBuf::from("/tmp/x"))
+        );
+
+        // &String (via AsRef<OsStr>)
+        let owned = String::from("/tmp/y");
+        assert_eq!(
+            IntoMaybeUndefined::<PathBuf>::into_maybe_undefined(&owned),
+            MaybeUndefined::Value(PathBuf::from("/tmp/y"))
+        );
+
+        // &Path (via AsRef<OsStr>)
+        let p: &Path = Path::new("/tmp/z");
+        assert_eq!(
+            IntoMaybeUndefined::<PathBuf>::into_maybe_undefined(p),
+            MaybeUndefined::Value(PathBuf::from("/tmp/z"))
+        );
+    }
+
+    #[test]
+    fn pathbuf_from_owned_pointers() {
+        // Box<Path>
+        let b: Box<Path> = PathBuf::from("/tmp/a").into_boxed_path();
+        assert_eq!(
+            IntoMaybeUndefined::<PathBuf>::into_maybe_undefined(b),
+            MaybeUndefined::Value(PathBuf::from("/tmp/a"))
+        );
+
+        // Cow<Path> (borrowed and owned arms)
+        let borrowed: Cow<'static, Path> = Cow::Borrowed(Path::new("/tmp/b"));
+        assert_eq!(
+            IntoMaybeUndefined::<PathBuf>::into_maybe_undefined(borrowed),
+            MaybeUndefined::Value(PathBuf::from("/tmp/b"))
+        );
+        let owned: Cow<'static, Path> = Cow::Owned(PathBuf::from("/tmp/c"));
+        assert_eq!(
+            IntoMaybeUndefined::<PathBuf>::into_maybe_undefined(owned),
+            MaybeUndefined::Value(PathBuf::from("/tmp/c"))
+        );
+    }
+
+    #[test]
+    fn json_value_from_strings() {
+        // &str
+        let s: &str = "hello";
+        assert_eq!(
+            IntoMaybeUndefined::<Value>::into_maybe_undefined(s),
+            MaybeUndefined::Value(Value::String("hello".into()))
+        );
+
+        // String
+        let owned = String::from("hi");
+        assert_eq!(
+            IntoMaybeUndefined::<Value>::into_maybe_undefined(owned),
+            MaybeUndefined::Value(Value::String("hi".into()))
+        );
+
+        // Cow<str> (borrowed and owned arms)
+        let borrowed: Cow<'static, str> = Cow::Borrowed("bye");
+        assert_eq!(
+            IntoMaybeUndefined::<Value>::into_maybe_undefined(borrowed),
+            MaybeUndefined::Value(Value::String("bye".into()))
+        );
+        let owned_cow: Cow<'static, str> = Cow::Owned(String::from("ciao"));
+        assert_eq!(
+            IntoMaybeUndefined::<Value>::into_maybe_undefined(owned_cow),
+            MaybeUndefined::Value(Value::String("ciao".into()))
+        );
+    }
 }
