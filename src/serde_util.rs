@@ -822,4 +822,209 @@ mod tests {
         value = MaybeUndefined::Value(Err("error"));
         assert_eq!(value.transpose(), Err("error"));
     }
+
+    // The `is_*`, `value`, and `take` accessors are public API used throughout
+    // the schema crate's builder/getter ergonomics, but only the `is_undefined`
+    // discriminator was exercised through the existing serde test. Cover all
+    // three states for each accessor so a future refactor of the enum layout
+    // cannot silently flip them.
+    #[test]
+    fn test_maybe_undefined_state_predicates() {
+        let undefined: MaybeUndefined<i32> = MaybeUndefined::Undefined;
+        assert!(undefined.is_undefined());
+        assert!(!undefined.is_null());
+        assert!(!undefined.is_value());
+
+        let null: MaybeUndefined<i32> = MaybeUndefined::Null;
+        assert!(!null.is_undefined());
+        assert!(null.is_null());
+        assert!(!null.is_value());
+
+        let value: MaybeUndefined<i32> = MaybeUndefined::Value(7);
+        assert!(!value.is_undefined());
+        assert!(!value.is_null());
+        assert!(value.is_value());
+    }
+
+    #[test]
+    fn test_maybe_undefined_value_accessor() {
+        let undefined: MaybeUndefined<i32> = MaybeUndefined::Undefined;
+        assert_eq!(undefined.value(), None);
+
+        let null: MaybeUndefined<i32> = MaybeUndefined::Null;
+        assert_eq!(null.value(), None);
+
+        let value: MaybeUndefined<i32> = MaybeUndefined::Value(11);
+        assert_eq!(value.value(), Some(&11));
+    }
+
+    #[test]
+    fn test_maybe_undefined_take() {
+        let undefined: MaybeUndefined<String> = MaybeUndefined::Undefined;
+        assert_eq!(undefined.take(), None);
+
+        let null: MaybeUndefined<String> = MaybeUndefined::Null;
+        assert_eq!(null.take(), None);
+
+        let value: MaybeUndefined<String> = MaybeUndefined::Value("hi".to_string());
+        assert_eq!(value.take(), Some("hi".to_string()));
+    }
+
+    // `update_to` is the merge primitive used by the diff/patch surfaces of
+    // the protocol: `Undefined` keeps existing state, `Null` clears it, and
+    // `Value` overwrites it. Only doctests exercised this until now, so make
+    // each branch a hard unit-test assertion.
+    #[test]
+    fn test_maybe_undefined_update_to() {
+        let mut target: Option<i32> = Some(1);
+        MaybeUndefined::Undefined.update_to(&mut target);
+        assert_eq!(target, Some(1), "Undefined must leave the value untouched");
+
+        MaybeUndefined::Value(2).update_to(&mut target);
+        assert_eq!(target, Some(2), "Value must overwrite the previous value");
+
+        MaybeUndefined::<i32>::Null.update_to(&mut target);
+        assert_eq!(target, None, "Null must clear the value");
+
+        // And once cleared, Undefined still keeps it cleared.
+        MaybeUndefined::<i32>::Undefined.update_to(&mut target);
+        assert_eq!(target, None, "Undefined must not resurrect a cleared value");
+    }
+
+    #[test]
+    fn test_maybe_undefined_from_nested_option() {
+        assert_eq!(MaybeUndefined::<i32>::from(None), MaybeUndefined::Undefined,);
+        assert_eq!(
+            MaybeUndefined::<i32>::from(Some(None)),
+            MaybeUndefined::Null,
+        );
+        assert_eq!(
+            MaybeUndefined::<i32>::from(Some(Some(9))),
+            MaybeUndefined::Value(9),
+        );
+    }
+
+    // `IntoOption` is the trait that backs every `pub fn foo(self, x: impl
+    // IntoOption<T>)` builder method on the schema types. The impls are
+    // mostly one-liners but their absence (or a regression in their
+    // ergonomics) would silently break the builder fluent API for every
+    // downstream consumer. Lock the shape of the supported conversions.
+    #[test]
+    fn test_into_option_passthrough_and_bare_value() {
+        let already: Option<i32> = Some(5);
+        assert_eq!(IntoOption::<i32>::into_option(already), Some(5));
+
+        let none_in: Option<i32> = None;
+        assert_eq!(IntoOption::<i32>::into_option(none_in), None);
+
+        // Bare value gets wrapped in Some.
+        assert_eq!(IntoOption::<i32>::into_option(42), Some(42));
+    }
+
+    #[test]
+    fn test_into_option_string_coercions() {
+        // &str, &String, Box<str>, Cow<str>, Arc<str>, and &mut str all
+        // coerce into Some(String). These power the most common builder
+        // overload pattern in the crate.
+        let s: &str = "abc";
+        assert_eq!(s.into_option(), Some("abc".to_string()));
+
+        let owned = String::from("def");
+        assert_eq!((&owned).into_option(), Some("def".to_string()));
+
+        let boxed: Box<str> = "ghi".into();
+        assert_eq!(boxed.into_option(), Some("ghi".to_string()));
+
+        let cow_borrowed: Cow<'_, str> = Cow::Borrowed("jkl");
+        assert_eq!(cow_borrowed.into_option(), Some("jkl".to_string()));
+
+        let cow_owned: Cow<'_, str> = Cow::Owned("mno".to_string());
+        assert_eq!(cow_owned.into_option(), Some("mno".to_string()));
+
+        let arc: Arc<str> = Arc::from("pqr");
+        assert_eq!(arc.into_option(), Some("pqr".to_string()));
+
+        let mut buf = String::from("xyz");
+        let m: &mut str = buf.as_mut_str();
+        assert_eq!(m.into_option(), Some("xyz".to_string()));
+    }
+
+    #[test]
+    fn test_into_option_pathbuf_coercions() {
+        let from_str: Option<PathBuf> = "/tmp/example".into_option();
+        assert_eq!(from_str, Some(PathBuf::from("/tmp/example")));
+
+        let from_os_str: &OsStr = OsStr::new("/var/log");
+        assert_eq!(from_os_str.into_option(), Some(PathBuf::from("/var/log")));
+
+        let boxed: Box<Path> = Path::new("/etc").into();
+        assert_eq!(boxed.into_option(), Some(PathBuf::from("/etc")));
+
+        let cow_borrowed: Cow<'_, Path> = Cow::Borrowed(Path::new("/usr"));
+        assert_eq!(cow_borrowed.into_option(), Some(PathBuf::from("/usr")));
+    }
+
+    #[test]
+    fn test_into_option_json_value_coercions() {
+        let from_str: Option<serde_json::Value> = "hello".into_option();
+        assert_eq!(from_str, Some(serde_json::Value::String("hello".into())));
+
+        let from_string: Option<serde_json::Value> = "world".to_string().into_option();
+        assert_eq!(from_string, Some(serde_json::Value::String("world".into())));
+
+        let cow: Cow<'_, str> = Cow::Borrowed("cow");
+        let from_cow: Option<serde_json::Value> = cow.into_option();
+        assert_eq!(from_cow, Some(serde_json::Value::String("cow".into())));
+    }
+
+    #[test]
+    fn test_into_maybe_undefined_passthrough_and_bare_value() {
+        let bare: MaybeUndefined<i32> = 7.into_maybe_undefined();
+        assert_eq!(bare, MaybeUndefined::Value(7));
+
+        let some: MaybeUndefined<i32> = Some(8).into_maybe_undefined();
+        assert_eq!(some, MaybeUndefined::Value(8));
+
+        // Unlike IntoOption, an explicit `None` becomes Null (an explicit
+        // clear) rather than Undefined. This is the contract that lets
+        // diff/patch builders distinguish "unset" from "clear".
+        let none: MaybeUndefined<i32> = Option::<i32>::None.into_maybe_undefined();
+        assert_eq!(none, MaybeUndefined::Null);
+
+        // A pre-existing MaybeUndefined is returned as-is, even Undefined.
+        let mu: MaybeUndefined<i32> = MaybeUndefined::Undefined.into_maybe_undefined();
+        assert_eq!(mu, MaybeUndefined::Undefined);
+    }
+
+    #[test]
+    fn test_into_maybe_undefined_string_and_path_coercions() {
+        // String coercions
+        let s: &str = "abc";
+        assert_eq!(
+            s.into_maybe_undefined(),
+            MaybeUndefined::Value("abc".to_string()),
+        );
+
+        let cow: Cow<'_, str> = Cow::Owned("def".to_string());
+        assert_eq!(
+            cow.into_maybe_undefined(),
+            MaybeUndefined::Value("def".to_string()),
+        );
+
+        let arc: Arc<str> = Arc::from("ghi");
+        assert_eq!(
+            arc.into_maybe_undefined(),
+            MaybeUndefined::Value("ghi".to_string()),
+        );
+
+        // Path coercions
+        let from_str: MaybeUndefined<PathBuf> = "/tmp/x".into_maybe_undefined();
+        assert_eq!(from_str, MaybeUndefined::Value(PathBuf::from("/tmp/x")));
+
+        let boxed: Box<Path> = Path::new("/y").into();
+        assert_eq!(
+            boxed.into_maybe_undefined(),
+            MaybeUndefined::Value(PathBuf::from("/y")),
+        );
+    }
 }
