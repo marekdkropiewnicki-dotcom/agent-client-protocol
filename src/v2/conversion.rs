@@ -9513,4 +9513,86 @@ mod tests {
             ))
         );
     }
+
+    /// Logout was stabilized in #1273 (the `unstable_logout` cfg guard was
+    /// removed from both the type definitions and their conversions). Round
+    /// trip the request, response, and the surrounding capability container
+    /// so any future divergence between v1 and v2 (renamed/added/dropped
+    /// fields) is caught immediately on both directions of the conversion.
+    #[test]
+    fn round_trips_logout_request() {
+        let request = v1::LogoutRequest::new();
+        assert_v1_round_trip::<v1::LogoutRequest, v2::LogoutRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LogoutRequest, v2::LogoutRequest>(request);
+    }
+
+    #[test]
+    fn round_trips_logout_response() {
+        let response = v1::LogoutResponse::new();
+        assert_v1_round_trip::<v1::LogoutResponse, v2::LogoutResponse>(response.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LogoutResponse, v2::LogoutResponse>(response);
+    }
+
+    #[test]
+    fn round_trips_logout_capabilities() {
+        let caps = v1::LogoutCapabilities::new();
+        assert_v1_round_trip::<v1::LogoutCapabilities, v2::LogoutCapabilities>(caps.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LogoutCapabilities, v2::LogoutCapabilities>(caps);
+    }
+
+    #[test]
+    fn round_trips_agent_auth_capabilities_with_and_without_logout() {
+        // No logout advertised — exercises the `Option<LogoutCapabilities>`
+        // shape that pre-stabilization deployments still emit.
+        let no_logout = v1::AgentAuthCapabilities::new();
+        assert_v1_round_trip::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
+            no_logout.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
+            no_logout,
+        );
+
+        // Logout advertised — exercises the now-stable opt-in path. This is the
+        // shape that newly stabilized agents will publish.
+        let with_logout = v1::AgentAuthCapabilities::new().logout(v1::LogoutCapabilities::new());
+        assert_v1_round_trip::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
+            with_logout.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
+            with_logout,
+        );
+    }
+
+    #[test]
+    fn round_trips_authenticate_request_and_response() {
+        // Authenticate is the partner method to logout; conversion now also
+        // runs without the `unstable_logout` gate. Verifying it explicitly
+        // keeps the auth lifecycle covered end-to-end rather than only via
+        // the broader `InitializeResponse` test.
+        let request = v1::AuthenticateRequest::new("api-key");
+        assert_v1_round_trip::<v1::AuthenticateRequest, v2::AuthenticateRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::AuthenticateRequest, v2::AuthenticateRequest>(request);
+
+        let response = v1::AuthenticateResponse::new();
+        assert_v1_round_trip::<v1::AuthenticateResponse, v2::AuthenticateResponse>(
+            response.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::AuthenticateResponse, v2::AuthenticateResponse>(
+            response,
+        );
+    }
+
+    /// Full `AgentCapabilities` round trip, including the now-stable `auth`
+    /// field that the logout stabilization PR removed from behind a feature
+    /// flag. Catches accidental field reorderings or drift between the two
+    /// `IntoV1`/`IntoV2` impls that the existing `InitializeResponse` test
+    /// only covers indirectly.
+    #[test]
+    fn round_trips_agent_capabilities_with_auth_logout() {
+        let caps = v1::AgentCapabilities::new()
+            .load_session(true)
+            .auth(v1::AgentAuthCapabilities::new().logout(v1::LogoutCapabilities::new()));
+        assert_v1_round_trip::<v1::AgentCapabilities, v2::AgentCapabilities>(caps.clone());
+        assert_json_eq_after_v1_to_v2::<v1::AgentCapabilities, v2::AgentCapabilities>(caps);
+    }
 }

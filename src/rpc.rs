@@ -187,6 +187,82 @@ mod tests {
         assert_eq!(id.to_string(), "id");
     }
 
+    // `Response::new` is the single constructor used to lift any
+    // `Result<R, E>` into the JSON-RPC `Response` envelope. A bug here would
+    // corrupt every server reply that runs through it, so pin the mapping of
+    // both `Ok` and `Err` branches against an explicit shape.
+    #[test]
+    fn response_new_from_ok_and_err() {
+        let ok: Response<i32, String> = Response::new(1i64, Ok::<i32, String>(7));
+        match ok {
+            Response::Result { id, result } => {
+                assert_eq!(id, RequestId::Number(1));
+                assert_eq!(result, 7);
+            }
+            Response::Error { .. } => panic!("expected Result variant"),
+        }
+
+        let err: Response<i32, String> = Response::new(2i64, Err::<i32, String>("boom".into()));
+        match err {
+            Response::Error { id, error } => {
+                assert_eq!(id, RequestId::Number(2));
+                assert_eq!(error, "boom");
+            }
+            Response::Result { .. } => panic!("expected Error variant"),
+        }
+
+        // Verify the `Into<RequestId>` overloads also work, since callers
+        // routinely pass `&str` and owned `String` request ids.
+        let str_id: Response<i32, String> =
+            Response::new("req-1".to_string(), Ok::<i32, String>(0));
+        match str_id {
+            Response::Result { id, .. } => assert_eq!(id, RequestId::Str("req-1".into())),
+            Response::Error { .. } => panic!("expected Result variant"),
+        }
+    }
+
+    /// `JsonRpcMessage` is the only place the `"jsonrpc": "2.0"` envelope is
+    /// added/stripped. Round-trip through serde and through `wrap`/
+    /// `into_inner` so neither path silently drops the version tag (which
+    /// would break compatibility with every spec-compliant peer).
+    #[test]
+    fn json_rpc_message_round_trip_through_wrap_and_into_inner() {
+        let original = Notification::<ClientNotification> {
+            method: "cancel".into(),
+            params: Some(ClientNotification::CancelNotification(CancelNotification {
+                session_id: SessionId("rt".into()),
+                meta: None,
+            })),
+        };
+
+        let wrapped = JsonRpcMessage::wrap(original.clone());
+        let json = serde_json::to_value(&wrapped).unwrap();
+        assert_eq!(json.get("jsonrpc").and_then(Value::as_str), Some("2.0"));
+
+        // Deserializing back must produce an equivalent envelope.
+        let deserialized: JsonRpcMessage<Notification<ClientNotification>> =
+            serde_json::from_value(json).unwrap();
+        let unwrapped = deserialized.into_inner();
+        assert_eq!(unwrapped.method, original.method);
+    }
+
+    /// A message missing the `"jsonrpc": "2.0"` field must fail to
+    /// deserialize. Skipping this would let us silently accept JSON-RPC 1.0
+    /// or non-spec input and silently route it incorrectly.
+    #[test]
+    fn json_rpc_message_rejects_missing_version() {
+        let bad = json!({
+            "method": "cancel",
+            "params": { "sessionId": "x" },
+        });
+        let result: Result<JsonRpcMessage<Notification<ClientNotification>>, _> =
+            serde_json::from_value(bad);
+        assert!(
+            result.is_err(),
+            "missing jsonrpc field should fail to deserialize",
+        );
+    }
+
     #[test]
     fn notification_wire_format() {
         // Test client -> agent notification wire format
