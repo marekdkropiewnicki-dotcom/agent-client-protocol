@@ -416,7 +416,7 @@ mod tests {
         assert!(err.data.is_none());
     }
 
-    /// `into_internal_error` must (1) use the InternalError code and (2)
+    /// `into_internal_error` must (1) use the `InternalError` code and (2)
     /// stash the source error's `Display` rendering under `data` so callers
     /// keep diagnostic context after the cross-boundary conversion.
     #[test]
@@ -492,7 +492,10 @@ mod tests {
     /// readable when the code is the most useful identifier (e.g. `Other`).
     #[test]
     fn error_code_debug_includes_numeric_value_and_label() {
-        assert_eq!(format!("{:?}", ErrorCode::ParseError), "-32700: Parse error");
+        assert_eq!(
+            format!("{:?}", ErrorCode::ParseError),
+            "-32700: Parse error"
+        );
         assert_eq!(
             format!("{:?}", ErrorCode::InternalError),
             "-32603: Internal error"
@@ -514,7 +517,10 @@ mod tests {
             rendered.starts_with("Invalid params: "),
             "unexpected display: {rendered}"
         );
-        assert!(rendered.contains("\"field\""), "data not rendered: {rendered}");
+        assert!(
+            rendered.contains("\"field\""),
+            "data not rendered: {rendered}"
+        );
         assert!(rendered.contains("\"id\""), "data not rendered: {rendered}");
 
         let empty_message = Error {

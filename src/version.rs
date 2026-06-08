@@ -132,4 +132,82 @@ mod tests {
         let version: ProtocolVersion = serde_json::from_str(json).unwrap();
         assert_eq!(version, ProtocolVersion::new(65535));
     }
+
+    /// Negotiation logic depends on `<` / `>` over `ProtocolVersion`. A regression
+    /// in the derived `Ord` (e.g. someone making it `derive(Ord)` over a tuple
+    /// struct in a way that flips comparison) would silently route clients to
+    /// the wrong protocol surface.
+    #[test]
+    fn ordering_is_numeric_and_total() {
+        assert!(ProtocolVersion::V0 < ProtocolVersion::V1);
+        assert!(ProtocolVersion::V1 > ProtocolVersion::V0);
+        assert_eq!(
+            ProtocolVersion::V1.cmp(&ProtocolVersion::V1),
+            std::cmp::Ordering::Equal
+        );
+
+        // A higher numeric version compares strictly greater than V1.
+        let future = ProtocolVersion::new(99);
+        assert!(future > ProtocolVersion::V1);
+    }
+
+    /// Wire format for the integer version must serialize as a bare number,
+    /// not a struct. Several clients pin against this shape directly.
+    #[test]
+    fn serializes_as_bare_number() {
+        assert_eq!(
+            serde_json::to_value(ProtocolVersion::V1).unwrap(),
+            serde_json::json!(1)
+        );
+        assert_eq!(serde_json::to_string(&ProtocolVersion::V0).unwrap(), "0");
+    }
+
+    /// Display should render the bare integer too — used in CLI banners
+    /// and log messages where the surrounding text already provides
+    /// "ACP version" framing.
+    #[test]
+    fn display_renders_bare_integer() {
+        assert_eq!(ProtocolVersion::V0.to_string(), "0");
+        assert_eq!(ProtocolVersion::V1.to_string(), "1");
+        assert_eq!(ProtocolVersion::new(42).to_string(), "42");
+    }
+
+    /// Negative integers must not be silently coerced to a valid version —
+    /// they should fail deserialization so that the agent is aware that
+    /// the peer sent garbage.
+    #[test]
+    fn negative_numbers_fail_to_deserialize() {
+        let result: Result<ProtocolVersion, _> = serde_json::from_str("-1");
+        assert!(result.is_err(), "negative versions must be rejected");
+    }
+
+    /// Floating-point versions are also garbage — both legitimate floats
+    /// (`1.5`) and integer-valued floats (`1.0`) must not produce a valid
+    /// `ProtocolVersion`. Without this guard, `serde_json` would happily
+    /// give us back `ProtocolVersion(1)` for `1.0`, masking a peer that
+    /// fundamentally doesn't speak the protocol.
+    #[test]
+    fn non_integer_numbers_fail_to_deserialize() {
+        assert!(serde_json::from_str::<ProtocolVersion>("1.5").is_err());
+        // serde_json currently flows non-integer u64 values through
+        // visit_f64; assert that they don't sneak through.
+        assert!(serde_json::from_str::<ProtocolVersion>("1.0").is_err());
+    }
+
+    /// Stability invariant: `LATEST` always points at the latest *stable*
+    /// version. This must hold whether or not the v2 draft feature is
+    /// enabled — that's documented contract for crate consumers who pin
+    /// against `LATEST` for negotiation.
+    #[test]
+    fn latest_is_v1_regardless_of_feature_flags() {
+        assert_eq!(ProtocolVersion::LATEST, ProtocolVersion::V1);
+    }
+
+    /// `From<u16>` is the canonical way SDKs construct versions from raw
+    /// negotiated bytes. Make sure the conversion is identity.
+    #[test]
+    fn from_u16_is_identity() {
+        let v: ProtocolVersion = 7u16.into();
+        assert_eq!(v, ProtocolVersion::new(7));
+    }
 }

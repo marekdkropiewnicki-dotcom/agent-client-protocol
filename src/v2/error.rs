@@ -472,7 +472,10 @@ mod tests {
 
     #[test]
     fn error_code_debug_includes_numeric_value_and_label() {
-        assert_eq!(format!("{:?}", ErrorCode::ParseError), "-32700: Parse error");
+        assert_eq!(
+            format!("{:?}", ErrorCode::ParseError),
+            "-32700: Parse error"
+        );
         assert_eq!(
             format!("{:?}", ErrorCode::InternalError),
             "-32603: Internal error"
@@ -491,7 +494,10 @@ mod tests {
             rendered.starts_with("Invalid params: "),
             "unexpected display: {rendered}"
         );
-        assert!(rendered.contains("\"field\""), "data not rendered: {rendered}");
+        assert!(
+            rendered.contains("\"field\""),
+            "data not rendered: {rendered}"
+        );
         assert!(rendered.contains("\"id\""), "data not rendered: {rendered}");
 
         let empty_message = Error {
