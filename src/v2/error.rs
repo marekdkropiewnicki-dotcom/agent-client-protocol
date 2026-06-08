@@ -370,4 +370,183 @@ mod tests {
             );
         }
     }
+
+    /// Every named constructor must produce the wire code/message pair documented
+    /// in the JSON-RPC and ACP specs. v1 and v2 errors must agree because the
+    /// conversion module relies on them being byte-equivalent on the wire.
+    #[test]
+    fn named_constructors_use_documented_codes_and_messages() {
+        let cases: &[(Error, i32, &str)] = &[
+            (Error::parse_error(), -32700, "Parse error"),
+            (Error::invalid_request(), -32600, "Invalid request"),
+            (Error::method_not_found(), -32601, "Method not found"),
+            (Error::invalid_params(), -32602, "Invalid params"),
+            (Error::internal_error(), -32603, "Internal error"),
+            (Error::auth_required(), -32000, "Authentication required"),
+            (
+                Error::resource_not_found(None),
+                -32002,
+                "Resource not found",
+            ),
+        ];
+        for (err, code, message) in cases {
+            assert_eq!(i32::from(err.code), *code, "wrong code for {message:?}");
+            assert_eq!(err.message, *message, "wrong message for {code}");
+            assert!(err.data.is_none(), "constructor must not set data");
+        }
+    }
+
+    #[test]
+    fn resource_not_found_with_uri_embeds_uri_in_data() {
+        let err = Error::resource_not_found(Some("file:///missing.txt".to_owned()));
+        assert_eq!(err.code, ErrorCode::ResourceNotFound);
+        assert_eq!(
+            err.data,
+            Some(serde_json::json!({"uri": "file:///missing.txt"}))
+        );
+    }
+
+    #[test]
+    fn resource_not_found_without_uri_leaves_data_unset() {
+        let err = Error::resource_not_found(None);
+        assert_eq!(err.code, ErrorCode::ResourceNotFound);
+        assert!(err.data.is_none());
+    }
+
+    #[test]
+    fn into_internal_error_includes_source_message_in_data() {
+        #[derive(Debug)]
+        struct Boom;
+        impl Display for Boom {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("boom!")
+            }
+        }
+        impl std::error::Error for Boom {}
+
+        let err = Error::into_internal_error(Boom);
+        assert_eq!(err.code, ErrorCode::InternalError);
+        assert_eq!(err.message, "Internal error");
+        assert_eq!(
+            err.data,
+            Some(serde_json::Value::String("boom!".to_string()))
+        );
+    }
+
+    #[test]
+    fn data_builder_overwrites_and_accepts_json() {
+        let err = Error::internal_error()
+            .data(serde_json::json!({"first": true}))
+            .data(serde_json::json!({"second": 42}));
+        assert_eq!(err.data, Some(serde_json::json!({"second": 42})));
+    }
+
+    #[test]
+    fn error_new_accepts_arbitrary_codes_and_round_trips() {
+        let err = Error::new(-32099, "custom server error");
+        assert_eq!(err.code, ErrorCode::Other(-32099));
+        let json = serde_json::to_value(&err).unwrap();
+        let back: Error = serde_json::from_value(json).unwrap();
+        assert_eq!(back, err);
+    }
+
+    #[test]
+    fn every_error_code_round_trips_through_i32() {
+        for code in ErrorCode::iter() {
+            let value: i32 = code.into();
+            let back = ErrorCode::from(value);
+            assert_eq!(back, code, "i32 round trip lost {code:?}");
+        }
+    }
+
+    #[test]
+    fn unknown_codes_deserialize_into_other() {
+        let err: Error = serde_json::from_value(serde_json::json!({
+            "code": -32099,
+            "message": "Server error",
+        }))
+        .unwrap();
+        assert_eq!(err.code, ErrorCode::Other(-32099));
+        assert_eq!(err.message, "Server error");
+    }
+
+    #[test]
+    fn error_code_debug_includes_numeric_value_and_label() {
+        assert_eq!(format!("{:?}", ErrorCode::ParseError), "-32700: Parse error");
+        assert_eq!(
+            format!("{:?}", ErrorCode::InternalError),
+            "-32603: Internal error"
+        );
+        assert_eq!(format!("{:?}", ErrorCode::Other(-1)), "-1: Unknown error");
+    }
+
+    #[test]
+    fn error_display_renders_message_then_pretty_data() {
+        let bare = Error::invalid_params();
+        assert_eq!(bare.to_string(), "Invalid params");
+
+        let with_data = Error::invalid_params().data(serde_json::json!({"field": "id"}));
+        let rendered = with_data.to_string();
+        assert!(
+            rendered.starts_with("Invalid params: "),
+            "unexpected display: {rendered}"
+        );
+        assert!(rendered.contains("\"field\""), "data not rendered: {rendered}");
+        assert!(rendered.contains("\"id\""), "data not rendered: {rendered}");
+
+        let empty_message = Error {
+            code: ErrorCode::InternalError,
+            message: String::new(),
+            data: None,
+        };
+        assert_eq!(empty_message.to_string(), "-32603");
+
+        let empty_message_with_data = Error {
+            code: ErrorCode::InternalError,
+            message: String::new(),
+            data: Some(serde_json::json!("ctx")),
+        };
+        assert_eq!(empty_message_with_data.to_string(), "-32603: \"ctx\"");
+    }
+
+    #[test]
+    fn from_serde_json_error_maps_to_invalid_params_with_message() {
+        let serde_err = serde_json::from_str::<i32>("not json").unwrap_err();
+        let stringified = serde_err.to_string();
+        let err: Error = serde_err.into();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        assert_eq!(err.message, "Invalid params");
+        assert_eq!(err.data, Some(serde_json::Value::String(stringified)));
+    }
+
+    #[test]
+    fn from_anyhow_error_downcasts_existing_error_losslessly() {
+        let original = Error::auth_required().data(serde_json::json!({"realm": "git"}));
+        let wrapped: anyhow::Error = anyhow::Error::new(original.clone());
+        let unwrapped: Error = wrapped.into();
+        assert_eq!(unwrapped, original);
+    }
+
+    #[test]
+    fn from_anyhow_error_with_other_source_falls_back_to_internal_error() {
+        let wrapped: anyhow::Error = anyhow::anyhow!("disk on fire");
+        let err: Error = wrapped.into();
+        assert_eq!(err.code, ErrorCode::InternalError);
+        assert_eq!(err.message, "Internal error");
+        assert_eq!(
+            err.data,
+            Some(serde_json::Value::String("disk on fire".to_string()))
+        );
+    }
+
+    #[test]
+    fn serialized_error_omits_data_field_when_none() {
+        let err = Error::method_not_found();
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"code": -32601, "message": "Method not found"})
+        );
+        assert!(json.get("data").is_none(), "data field must be omitted");
+    }
 }
