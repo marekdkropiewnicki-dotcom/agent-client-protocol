@@ -9776,8 +9776,9 @@ mod tests {
     }
 
     /// `Response::Result` and `Response::Error` are two separate `match`
-    /// arms in the conversion; either could be silently mis-mapped. Cover
-    /// both explicitly with realistic payloads. `Response` does not
+    /// arms in the conversion; either could be silently swapped or
+    /// misrouted. Cover both explicitly with realistic payloads.
+    /// `Response` does not
     /// implement `PartialEq`, so we re-pattern-match to inspect the result.
     #[test]
     fn response_result_and_error_arms_round_trip() {
