@@ -822,4 +822,130 @@ mod tests {
         value = MaybeUndefined::Value(Err("error"));
         assert_eq!(value.transpose(), Err("error"));
     }
+
+    /// State predicates are used throughout the codebase to gate
+    /// `skip_serializing_if`, so each must agree with the corresponding
+    /// variant exactly.
+    #[test]
+    fn predicates_match_variants() {
+        let undef: MaybeUndefined<i32> = MaybeUndefined::Undefined;
+        assert!(undef.is_undefined());
+        assert!(!undef.is_null());
+        assert!(!undef.is_value());
+
+        let null: MaybeUndefined<i32> = MaybeUndefined::Null;
+        assert!(!null.is_undefined());
+        assert!(null.is_null());
+        assert!(!null.is_value());
+
+        let value = MaybeUndefined::Value(7i32);
+        assert!(!value.is_undefined());
+        assert!(!value.is_null());
+        assert!(value.is_value());
+    }
+
+    /// `value()` (borrow) and `take()` (consume) collapse Undefined/Null down
+    /// to `None`. Both must behave identically for the missing-data case so
+    /// callers can use whichever fits their ownership story.
+    #[test]
+    fn value_borrow_and_take_collapse_missing_states() {
+        let value = MaybeUndefined::Value("hi".to_owned());
+        assert_eq!(value.value(), Some(&"hi".to_owned()));
+
+        let null: MaybeUndefined<String> = MaybeUndefined::Null;
+        assert_eq!(null.value(), None);
+
+        let undefined: MaybeUndefined<String> = MaybeUndefined::Undefined;
+        assert_eq!(undefined.value(), None);
+
+        assert_eq!(MaybeUndefined::Value(42i32).take(), Some(42));
+        assert_eq!(MaybeUndefined::<i32>::Null.take(), None);
+        assert_eq!(MaybeUndefined::<i32>::Undefined.take(), None);
+    }
+
+    /// `update_to` is the documented merge primitive used to apply diff-style
+    /// updates onto an `Option<T>`. The contract (Value=>Some, Null=>None,
+    /// Undefined=>no change) is doc-tested but not unit-tested, leaving the
+    /// "Undefined preserves prior Some" branch silently uncovered.
+    #[test]
+    fn update_to_applies_diff_semantics() {
+        let mut target = None;
+
+        MaybeUndefined::Value(10i32).update_to(&mut target);
+        assert_eq!(target, Some(10));
+
+        MaybeUndefined::<i32>::Undefined.update_to(&mut target);
+        assert_eq!(target, Some(10), "Undefined must not mutate the target");
+
+        MaybeUndefined::<i32>::Null.update_to(&mut target);
+        assert_eq!(target, None);
+
+        // Null on an already-None target stays None (no panic, no extra work).
+        MaybeUndefined::<i32>::Null.update_to(&mut target);
+        assert_eq!(target, None);
+    }
+
+    /// The two `From` impls must be exact inverses; this protects against
+    /// accidental left/right swaps in the match arms.
+    #[test]
+    fn from_nested_option_is_inverse_of_into_nested_option() {
+        let cases = [
+            MaybeUndefined::<i32>::Undefined,
+            MaybeUndefined::<i32>::Null,
+            MaybeUndefined::<i32>::Value(99),
+        ];
+        for case in cases {
+            let nested: Option<Option<i32>> = case.into();
+            let recovered: MaybeUndefined<i32> = nested.into();
+            assert_eq!(case, recovered);
+        }
+    }
+
+    /// `IntoMaybeUndefined` is what makes builder methods ergonomic: passing
+    /// `T`, `Option<T>`, `MaybeUndefined<T>`, or `&str` must all produce the
+    /// expected three-state value.
+    #[test]
+    fn into_maybe_undefined_matches_call_sites() {
+        // Identity over `T`.
+        let v: MaybeUndefined<i32> = 5.into_maybe_undefined();
+        assert_eq!(v, MaybeUndefined::Value(5));
+
+        // `Option` collapses `None` to `Null` (not `Undefined`!) — this is
+        // load-bearing for builders that want to clear a value rather than
+        // skip it.
+        let some: MaybeUndefined<i32> = Some(7).into_maybe_undefined();
+        assert_eq!(some, MaybeUndefined::Value(7));
+        let none: MaybeUndefined<i32> = None::<i32>.into_maybe_undefined();
+        assert_eq!(none, MaybeUndefined::Null);
+
+        // Passing through `MaybeUndefined<T>` (the `IntoMaybeUndefined<T> for
+        // MaybeUndefined<T>` impl) is the identity. The turbofish nails down
+        // which `Into` impl the compiler should pick.
+        let undef: MaybeUndefined<i32> = MaybeUndefined::Undefined;
+        assert_eq!(
+            IntoMaybeUndefined::<i32>::into_maybe_undefined(undef),
+            MaybeUndefined::<i32>::Undefined
+        );
+
+        // String-ish coercions.
+        let s: MaybeUndefined<String> = "abc".into_maybe_undefined();
+        assert_eq!(s, MaybeUndefined::Value("abc".to_owned()));
+
+        let owned = String::from("xy");
+        let from_ref: MaybeUndefined<String> = (&owned).into_maybe_undefined();
+        assert_eq!(from_ref, MaybeUndefined::Value("xy".to_owned()));
+
+        let arc: std::sync::Arc<str> = std::sync::Arc::from("ok");
+        let from_arc: MaybeUndefined<String> = arc.into_maybe_undefined();
+        assert_eq!(from_arc, MaybeUndefined::Value("ok".to_owned()));
+    }
+
+    /// Default is `Undefined` so derived `Default` impls on structs that
+    /// embed `MaybeUndefined` fields produce the "absent" wire shape.
+    #[test]
+    fn default_is_undefined() {
+        let v: MaybeUndefined<i32> = MaybeUndefined::default();
+        assert_eq!(v, MaybeUndefined::Undefined);
+        assert!(v.is_undefined());
+    }
 }
