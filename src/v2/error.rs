@@ -377,19 +377,52 @@ mod tests {
     #[test]
     fn convenience_constructors_carry_code_and_default_message() {
         let cases: Vec<(Error, ErrorCode, i32, &str)> = vec![
-            (Error::parse_error(), ErrorCode::ParseError, -32700, "Parse error"),
-            (Error::invalid_request(), ErrorCode::InvalidRequest, -32600, "Invalid request"),
-            (Error::method_not_found(), ErrorCode::MethodNotFound, -32601, "Method not found"),
-            (Error::invalid_params(), ErrorCode::InvalidParams, -32602, "Invalid params"),
-            (Error::internal_error(), ErrorCode::InternalError, -32603, "Internal error"),
-            (Error::auth_required(), ErrorCode::AuthRequired, -32000, "Authentication required"),
+            (
+                Error::parse_error(),
+                ErrorCode::ParseError,
+                -32700,
+                "Parse error",
+            ),
+            (
+                Error::invalid_request(),
+                ErrorCode::InvalidRequest,
+                -32600,
+                "Invalid request",
+            ),
+            (
+                Error::method_not_found(),
+                ErrorCode::MethodNotFound,
+                -32601,
+                "Method not found",
+            ),
+            (
+                Error::invalid_params(),
+                ErrorCode::InvalidParams,
+                -32602,
+                "Invalid params",
+            ),
+            (
+                Error::internal_error(),
+                ErrorCode::InternalError,
+                -32603,
+                "Internal error",
+            ),
+            (
+                Error::auth_required(),
+                ErrorCode::AuthRequired,
+                -32000,
+                "Authentication required",
+            ),
         ];
 
         for (err, code, code_i32, message) in cases {
             assert_eq!(err.code, code, "code mismatch for {message}");
             assert_eq!(i32::from(err.code), code_i32, "i32 mismatch for {message}");
             assert_eq!(err.message, message);
-            assert!(err.data.is_none(), "default constructor should not carry data");
+            assert!(
+                err.data.is_none(),
+                "default constructor should not carry data"
+            );
         }
     }
 
@@ -436,7 +469,10 @@ mod tests {
 
         // String slices go through `IntoOption<serde_json::Value> for &str`.
         let err = Error::invalid_params().data("bad payload");
-        assert_eq!(err.data, Some(serde_json::Value::String("bad payload".into())));
+        assert_eq!(
+            err.data,
+            Some(serde_json::Value::String("bad payload".into()))
+        );
 
         // Chained calls replace earlier data.
         let err = Error::invalid_params()
@@ -470,8 +506,14 @@ mod tests {
             rendered.starts_with("Invalid params: "),
             "unexpected prefix in {rendered:?}"
         );
-        assert!(rendered.contains("\"field\""), "missing JSON body in {rendered:?}");
-        assert!(rendered.contains("\"name\""), "missing JSON body in {rendered:?}");
+        assert!(
+            rendered.contains("\"field\""),
+            "missing JSON body in {rendered:?}"
+        );
+        assert!(
+            rendered.contains("\"name\""),
+            "missing JSON body in {rendered:?}"
+        );
     }
 
     /// Empty-message branch of `Display`: falls back to the numeric code.
@@ -488,11 +530,11 @@ mod tests {
     /// log lines all over the SDK; it must not regress to the strum default.
     #[test]
     fn error_code_debug_uses_code_then_name() {
-        assert_eq!(format!("{:?}", ErrorCode::ParseError), "-32700: Parse error");
         assert_eq!(
-            format!("{:?}", ErrorCode::Other(-1)),
-            "-1: Unknown error"
+            format!("{:?}", ErrorCode::ParseError),
+            "-32700: Parse error"
         );
+        assert_eq!(format!("{:?}", ErrorCode::Other(-1)), "-1: Unknown error");
     }
 
     /// `From<serde_json::Error>` is the conventional bridge between serde
@@ -614,6 +656,9 @@ mod tests {
         let bare = Error::method_not_found();
         let json = serde_json::to_value(&bare).unwrap();
         let obj = json.as_object().unwrap();
-        assert!(!obj.contains_key("data"), "data should be omitted, got {obj:?}");
+        assert!(
+            !obj.contains_key("data"),
+            "data should be omitted, got {obj:?}"
+        );
     }
 }

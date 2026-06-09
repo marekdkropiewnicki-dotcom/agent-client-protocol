@@ -9611,13 +9611,12 @@ mod tests {
     /// its own per-variant ergonomic shape verified.
     #[test]
     fn permission_outcome_selected_preserves_option_id_shape() {
-        let response = v1::RequestPermissionResponse::new(
-            v1::RequestPermissionOutcome::Selected(v1::SelectedPermissionOutcome::new("opt_xyz")),
-        );
+        let response = v1::RequestPermissionResponse::new(v1::RequestPermissionOutcome::Selected(
+            v1::SelectedPermissionOutcome::new("opt_xyz"),
+        ));
 
         let json_before = serde_json::to_value(&response).unwrap();
-        let v2_value =
-            v1_to_v2::<v1::RequestPermissionResponse>(response.clone()).unwrap();
+        let v2_value = v1_to_v2::<v1::RequestPermissionResponse>(response.clone()).unwrap();
         let json_after = serde_json::to_value(&v2_value).unwrap();
         assert_eq!(json_before, json_after);
 
@@ -9631,8 +9630,7 @@ mod tests {
 
         // And then back through v1.
         let recovered =
-            v2_to_v1::<v2::RequestPermissionResponse>(v1_to_v2(response.clone()).unwrap())
-                .unwrap();
+            v2_to_v1::<v2::RequestPermissionResponse>(v1_to_v2(response.clone()).unwrap()).unwrap();
         assert_eq!(recovered, response);
     }
 
@@ -9835,7 +9833,7 @@ mod tests {
             Ok::<_, v1::Error>(v1::PromptResponse::new(v1::StopReason::EndTurn)),
         );
         let v1_json = serde_json::to_value(&ok).unwrap();
-        let v2_json = serde_json::to_value(&v1_to_v2(ok).unwrap()).unwrap();
+        let v2_json = serde_json::to_value(v1_to_v2(ok).unwrap()).unwrap();
         assert_eq!(v1_json, v2_json);
 
         let err: v1::Response<v1::PromptResponse> = v1::Response::new(
@@ -9843,7 +9841,7 @@ mod tests {
             Err::<v1::PromptResponse, _>(v1::Error::internal_error()),
         );
         let v1_json = serde_json::to_value(&err).unwrap();
-        let v2_json = serde_json::to_value(&v1_to_v2(err).unwrap()).unwrap();
+        let v2_json = serde_json::to_value(v1_to_v2(err).unwrap()).unwrap();
         assert_eq!(v1_json, v2_json);
     }
 
