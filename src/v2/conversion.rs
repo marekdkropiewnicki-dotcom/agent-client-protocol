@@ -9513,4 +9513,455 @@ mod tests {
             ))
         );
     }
+
+    /// `ProtocolConversionError::message`, `Display`, and `Debug` are all
+    /// part of the public surface (consumers print these in logs and tests).
+    /// Lock the formatting and the `From<&str>`/`From<String>` ergonomics
+    /// down so they don't regress silently.
+    #[test]
+    fn protocol_conversion_error_accessors_and_formatting() {
+        // `new` accepts both `&str` and `String`.
+        let from_str = ProtocolConversionError::new("from-str");
+        assert_eq!(from_str.message(), "from-str");
+        assert_eq!(from_str.to_string(), "from-str");
+        // Debug is auto-derived but is part of the public observable shape.
+        assert!(format!("{from_str:?}").contains("from-str"));
+
+        let from_string = ProtocolConversionError::new(String::from("from-string"));
+        assert_eq!(from_string.message(), "from-string");
+        assert_eq!(from_string.to_string(), "from-string");
+
+        // `PartialEq` is derived and used in tests; sanity check it.
+        assert_eq!(from_str, ProtocolConversionError::new("from-str"));
+        assert_ne!(from_str, ProtocolConversionError::new("other"));
+    }
+
+    /// Direct `.into()` (not just `?`) on `ProtocolConversionError` must
+    /// produce an `InternalError` with the message stored in `data`. The
+    /// existing tests only cover the `?` path.
+    #[test]
+    fn protocol_conversion_error_direct_into_v1_and_v2_error() {
+        let err = ProtocolConversionError::new("explicit");
+        let v1_err: v1::Error = err.clone().into();
+        assert_eq!(v1_err.code, v1::ErrorCode::InternalError);
+        assert_eq!(
+            v1_err.data,
+            Some(serde_json::Value::String("explicit".to_owned()))
+        );
+
+        let v2_err: v2::Error = err.into();
+        assert_eq!(v2_err.code, v2::ErrorCode::InternalError);
+        assert_eq!(
+            v2_err.data,
+            Some(serde_json::Value::String("explicit".to_owned()))
+        );
+    }
+
+    /// All three `PlanEntryPriority` variants must round-trip in both
+    /// directions. The existing tests only exercise `High` via the bigger
+    /// session-notification matrix; if `Medium` or `Low` ever picked up a
+    /// rename, the wire format would silently coerce.
+    #[test]
+    fn round_trips_every_plan_entry_priority_variant() {
+        for priority in [
+            v1::PlanEntryPriority::High,
+            v1::PlanEntryPriority::Medium,
+            v1::PlanEntryPriority::Low,
+        ] {
+            let entry = v1::PlanEntry::new("step", priority, v1::PlanEntryStatus::Pending);
+            assert_v1_round_trip::<v1::PlanEntry, v2::PlanEntry>(entry.clone());
+            assert_json_eq_after_v1_to_v2::<v1::PlanEntry, v2::PlanEntry>(entry);
+        }
+    }
+
+    /// Mirror of the priority matrix for `PlanEntryStatus`. `InProgress` is
+    /// the only variant exercised by the existing tests.
+    #[test]
+    fn round_trips_every_plan_entry_status_variant() {
+        for status in [
+            v1::PlanEntryStatus::Pending,
+            v1::PlanEntryStatus::InProgress,
+            v1::PlanEntryStatus::Completed,
+        ] {
+            let entry = v1::PlanEntry::new("step", v1::PlanEntryPriority::Medium, status);
+            assert_v1_round_trip::<v1::PlanEntry, v2::PlanEntry>(entry.clone());
+            assert_json_eq_after_v1_to_v2::<v1::PlanEntry, v2::PlanEntry>(entry);
+        }
+    }
+
+    /// Every `PermissionOptionKind` is part of an explicit `match` arm in
+    /// the conversion — if any arm gets dropped during a refactor, a v1
+    /// permission UI silently fails. Round-trip all four.
+    #[test]
+    fn round_trips_every_permission_option_kind() {
+        for kind in [
+            v1::PermissionOptionKind::AllowOnce,
+            v1::PermissionOptionKind::AllowAlways,
+            v1::PermissionOptionKind::RejectOnce,
+            v1::PermissionOptionKind::RejectAlways,
+        ] {
+            let option = v1::PermissionOption::new("opt_1", "Allow", kind);
+            assert_v1_round_trip::<v1::PermissionOption, v2::PermissionOption>(option.clone());
+            assert_json_eq_after_v1_to_v2::<v1::PermissionOption, v2::PermissionOption>(option);
+        }
+    }
+
+    /// `RequestPermissionOutcome::Cancelled` is covered but the
+    /// `Selected(opt_id)` arm — the one that actually moves data — needs
+    /// its own per-variant ergonomic shape verified.
+    #[test]
+    fn permission_outcome_selected_preserves_option_id_shape() {
+        let response = v1::RequestPermissionResponse::new(v1::RequestPermissionOutcome::Selected(
+            v1::SelectedPermissionOutcome::new("opt_xyz"),
+        ));
+
+        let json_before = serde_json::to_value(&response).unwrap();
+        let v2_value = v1_to_v2::<v1::RequestPermissionResponse>(response.clone()).unwrap();
+        let json_after = serde_json::to_value(&v2_value).unwrap();
+        assert_eq!(json_before, json_after);
+
+        // Outcome literally references the same option id.
+        match v2_value.outcome {
+            v2::RequestPermissionOutcome::Selected(s) => {
+                assert_eq!(&*s.option_id.0, "opt_xyz");
+            }
+            other => panic!("expected Selected, got {other:?}"),
+        }
+
+        // And then back through v1.
+        let recovered =
+            v2_to_v1::<v2::RequestPermissionResponse>(v1_to_v2(response.clone()).unwrap()).unwrap();
+        assert_eq!(recovered, response);
+    }
+
+    /// `StopReason` (carried in `PromptResponse`) is a small enum that needs
+    /// to keep every variant round-tripping — the wire format clients use
+    /// to decide UI affordances depends on this.
+    #[test]
+    fn round_trips_every_stop_reason() {
+        for reason in [
+            v1::StopReason::EndTurn,
+            v1::StopReason::MaxTokens,
+            v1::StopReason::MaxTurnRequests,
+            v1::StopReason::Refusal,
+            v1::StopReason::Cancelled,
+        ] {
+            let response = v1::PromptResponse::new(reason);
+            assert_v1_round_trip::<v1::PromptResponse, v2::PromptResponse>(response.clone());
+            assert_json_eq_after_v1_to_v2::<v1::PromptResponse, v2::PromptResponse>(response);
+        }
+    }
+
+    /// `ToolKind` is `#[non_exhaustive]` + has an `Other` default — its
+    /// many variants each need a working conversion arm. Cover every
+    /// non-`Other` variant explicitly so a missing arm fails fast.
+    #[test]
+    fn round_trips_every_tool_kind() {
+        for kind in [
+            v1::ToolKind::Read,
+            v1::ToolKind::Edit,
+            v1::ToolKind::Delete,
+            v1::ToolKind::Move,
+            v1::ToolKind::Search,
+            v1::ToolKind::Execute,
+            v1::ToolKind::Think,
+            v1::ToolKind::Fetch,
+            v1::ToolKind::SwitchMode,
+            v1::ToolKind::Other,
+        ] {
+            let tc = v1::ToolCall::new("tc", "title").kind(kind);
+            assert_v1_round_trip::<v1::ToolCall, v2::ToolCall>(tc.clone());
+            assert_json_eq_after_v1_to_v2::<v1::ToolCall, v2::ToolCall>(tc);
+        }
+    }
+
+    /// All four `ToolCallStatus` variants must round-trip and keep their
+    /// JSON shape — clients render different UI affordances per status.
+    #[test]
+    fn round_trips_every_tool_call_status() {
+        for status in [
+            v1::ToolCallStatus::Pending,
+            v1::ToolCallStatus::InProgress,
+            v1::ToolCallStatus::Completed,
+            v1::ToolCallStatus::Failed,
+        ] {
+            let tc = v1::ToolCall::new("tc", "title").status(status);
+            assert_v1_round_trip::<v1::ToolCall, v2::ToolCall>(tc.clone());
+            assert_json_eq_after_v1_to_v2::<v1::ToolCall, v2::ToolCall>(tc);
+        }
+    }
+
+    /// `ContentBlock::Audio` and `ContentBlock::Resource` (embedded
+    /// resource) are the two variants not covered by the existing prompt
+    /// round-trip — both require their own arms in the conversion.
+    #[test]
+    fn round_trips_audio_and_embedded_resource_content_blocks() {
+        // Audio.
+        let audio = v1::ContentBlock::Audio(v1::AudioContent::new("base64", "audio/wav"));
+        assert_v1_round_trip::<v1::ContentBlock, v2::ContentBlock>(audio.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ContentBlock, v2::ContentBlock>(audio);
+
+        // Embedded text resource.
+        let text_res = v1::ContentBlock::Resource(v1::EmbeddedResource::new(
+            v1::EmbeddedResourceResource::TextResourceContents(v1::TextResourceContents::new(
+                "body",
+                "file:///t.txt",
+            )),
+        ));
+        assert_v1_round_trip::<v1::ContentBlock, v2::ContentBlock>(text_res.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ContentBlock, v2::ContentBlock>(text_res);
+
+        // Embedded blob resource — the alternative `EmbeddedResourceResource`
+        // arm, which has its own conversion match.
+        let blob_res = v1::ContentBlock::Resource(v1::EmbeddedResource::new(
+            v1::EmbeddedResourceResource::BlobResourceContents(v1::BlobResourceContents::new(
+                "deadbeef",
+                "file:///b.bin",
+            )),
+        ));
+        assert_v1_round_trip::<v1::ContentBlock, v2::ContentBlock>(blob_res.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ContentBlock, v2::ContentBlock>(blob_res);
+    }
+
+    /// `RequestId` has three variants and is the identity-converted enum
+    /// (v1 and v2 share `crate::rpc::RequestId`). Existing tests implicitly
+    /// cover `Str` (session ids carry strings); the other two have to be
+    /// exercised explicitly or they sit unused at runtime. Going forward,
+    /// when v1 and v2 diverge structurally, this test still locks in the
+    /// shape on at least one side.
+    #[test]
+    fn round_trips_every_request_id_variant() {
+        for id in [
+            v1::RequestId::Null,
+            v1::RequestId::Number(0),
+            v1::RequestId::Number(-7),
+            v1::RequestId::Number(i64::MAX),
+            v1::RequestId::Str("abc".to_owned()),
+        ] {
+            let as_v2 = v1_to_v2(id.clone()).unwrap();
+            let back: v1::RequestId = v2_to_v1(as_v2).unwrap();
+            assert_eq!(id, back, "RequestId did not survive v1 -> v2 -> v1");
+        }
+    }
+
+    /// `JsonRpcMessage` wraps a payload with `"jsonrpc": "2.0"` and the
+    /// conversion preserves this. We need to verify both wrap+unwrap survive
+    /// the round-trip and that the marker version is reattached on the
+    /// other side. Use `SessionNotification` as the payload because it has
+    /// non-trivial conversion paths (and impls `PartialEq`).
+    #[test]
+    fn json_rpc_message_wrap_round_trips_through_v2_and_back() {
+        let inner = v1::SessionNotification::new(
+            "sess",
+            v1::SessionUpdate::AgentMessageChunk(v1::ContentChunk::new(v1::ContentBlock::Text(
+                v1::TextContent::new("hi"),
+            ))),
+        );
+
+        // `JsonRpcMessage` is not `Clone`, so we rebuild it for each step.
+        let wrapped_for_serde = v1::JsonRpcMessage::wrap(inner.clone());
+        let v1_json = serde_json::to_value(&wrapped_for_serde).unwrap();
+
+        let wrapped = v1::JsonRpcMessage::wrap(inner.clone());
+        let as_v2 = v1_to_v2::<v1::JsonRpcMessage<v1::SessionNotification>>(wrapped).unwrap();
+
+        // Wire format is byte-identical and still carries `"jsonrpc": "2.0"`.
+        let v2_json = serde_json::to_value(&as_v2).unwrap();
+        assert_eq!(v1_json, v2_json);
+        assert_eq!(v1_json["jsonrpc"], "2.0");
+
+        // `into_inner` after the round-trip yields the original payload.
+        let back = v2_to_v1::<v2::JsonRpcMessage<v2::SessionNotification>>(as_v2).unwrap();
+        assert_eq!(back.into_inner(), inner);
+    }
+
+    /// `Response::Result` and `Response::Error` are two separate `match`
+    /// arms in the conversion; either could be silently swapped or
+    /// misrouted. Cover both explicitly with realistic payloads.
+    /// `Response` does not
+    /// implement `PartialEq`, so we re-pattern-match to inspect the result.
+    #[test]
+    fn response_result_and_error_arms_round_trip() {
+        // Ok arm.
+        let ok: v1::Response<v1::PromptResponse> = v1::Response::Result {
+            id: v1::RequestId::Number(1),
+            result: v1::PromptResponse::new(v1::StopReason::EndTurn),
+        };
+        let v1_json = serde_json::to_value(&ok).unwrap();
+        let as_v2 = v1_to_v2(ok).unwrap();
+        let v2_json = serde_json::to_value(&as_v2).unwrap();
+        assert_eq!(v1_json, v2_json);
+
+        let back: v1::Response<v1::PromptResponse> = v2_to_v1(as_v2).unwrap();
+        match back {
+            v1::Response::Result { id, result } => {
+                assert_eq!(id, v1::RequestId::Number(1));
+                assert_eq!(result.stop_reason, v1::StopReason::EndTurn);
+            }
+            v1::Response::Error { .. } => panic!("expected Result variant"),
+        }
+
+        // Error arm.
+        let err: v1::Response<v1::PromptResponse> = v1::Response::Error {
+            id: v1::RequestId::Str("call-1".to_owned()),
+            error: v1::Error::invalid_params().data("missing field"),
+        };
+        let v1_json = serde_json::to_value(&err).unwrap();
+        let as_v2 = v1_to_v2(err).unwrap();
+        let v2_json = serde_json::to_value(&as_v2).unwrap();
+        assert_eq!(v1_json, v2_json);
+
+        let back: v1::Response<v1::PromptResponse> = v2_to_v1(as_v2).unwrap();
+        match back {
+            v1::Response::Error { id, error } => {
+                assert_eq!(id, v1::RequestId::Str("call-1".to_owned()));
+                assert_eq!(error.code, v1::ErrorCode::InvalidParams);
+                assert_eq!(
+                    error.data,
+                    Some(serde_json::Value::String("missing field".to_owned()))
+                );
+            }
+            v1::Response::Result { .. } => panic!("expected Error variant"),
+        }
+    }
+
+    /// `Response::new` is the public helper that picks the right variant
+    /// from a `Result`. The conversion must not blur the two arms.
+    #[test]
+    fn response_new_helper_round_trips_both_outcomes() {
+        let ok: v1::Response<v1::PromptResponse> = v1::Response::new(
+            v1::RequestId::Number(1),
+            Ok::<_, v1::Error>(v1::PromptResponse::new(v1::StopReason::EndTurn)),
+        );
+        let v1_json = serde_json::to_value(&ok).unwrap();
+        let v2_json = serde_json::to_value(v1_to_v2(ok).unwrap()).unwrap();
+        assert_eq!(v1_json, v2_json);
+
+        let err: v1::Response<v1::PromptResponse> = v1::Response::new(
+            v1::RequestId::Number(2),
+            Err::<v1::PromptResponse, _>(v1::Error::internal_error()),
+        );
+        let v1_json = serde_json::to_value(&err).unwrap();
+        let v2_json = serde_json::to_value(v1_to_v2(err).unwrap()).unwrap();
+        assert_eq!(v1_json, v2_json);
+    }
+
+    /// `MaybeUndefined<T>` shows up everywhere as an optional update field;
+    /// the conversion has its own three-arm match that needs all states.
+    #[test]
+    fn maybe_undefined_generic_conversion_covers_all_states() {
+        // Wrap the value in a real ACP type that has a `MaybeUndefined`
+        // field (`ToolCallUpdateFields::kind`) so we exercise the actual
+        // call site instead of just the generic impl.
+        use crate::MaybeUndefined;
+
+        // Plain value.
+        let fields = v1::ToolCallUpdateFields::new().kind(v1::ToolKind::Edit);
+        let update = v1::ToolCallUpdate::new("tc", fields);
+        assert_v1_round_trip::<v1::ToolCallUpdate, v2::ToolCallUpdate>(update.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ToolCallUpdate, v2::ToolCallUpdate>(update);
+
+        // Sanity check on the bare generic impl across all three variants.
+        assert_eq!(
+            v1_to_v2::<MaybeUndefined<i32>>(MaybeUndefined::Undefined).unwrap(),
+            MaybeUndefined::Undefined,
+        );
+        assert_eq!(
+            v1_to_v2::<MaybeUndefined<i32>>(MaybeUndefined::Null).unwrap(),
+            MaybeUndefined::Null,
+        );
+        assert_eq!(
+            v1_to_v2::<MaybeUndefined<i32>>(MaybeUndefined::Value(7)).unwrap(),
+            MaybeUndefined::Value(7),
+        );
+        assert_eq!(
+            v2_to_v1::<MaybeUndefined<i32>>(MaybeUndefined::Value(7)).unwrap(),
+            MaybeUndefined::Value(7),
+        );
+    }
+
+    /// The blanket `Vec` and `Option` conversion impls must preserve order
+    /// and emptiness — both edge cases would silently mangle prompts and
+    /// tool-call lists.
+    #[test]
+    fn vec_and_option_blanket_impls_preserve_shape() {
+        // Empty Vec.
+        let empty: Vec<v1::PlanEntryPriority> = vec![];
+        let as_v2: Vec<v2::PlanEntryPriority> = v1_to_v2(empty.clone()).unwrap();
+        assert!(as_v2.is_empty());
+        let back: Vec<v1::PlanEntryPriority> = v2_to_v1(as_v2).unwrap();
+        assert_eq!(empty, back);
+
+        // Order-preserving non-empty Vec.
+        let ordered = vec![
+            v1::PlanEntryPriority::High,
+            v1::PlanEntryPriority::Low,
+            v1::PlanEntryPriority::Medium,
+        ];
+        let as_v2: Vec<v2::PlanEntryPriority> = v1_to_v2(ordered.clone()).unwrap();
+        let back: Vec<v1::PlanEntryPriority> = v2_to_v1(as_v2).unwrap();
+        assert_eq!(ordered, back);
+
+        // Option::Some and Option::None on a non-trivial inner type.
+        let some = Some(v1::PlanEntryStatus::Completed);
+        let as_v2: Option<v2::PlanEntryStatus> = v1_to_v2(some.clone()).unwrap();
+        assert!(as_v2.is_some());
+        let back: Option<v1::PlanEntryStatus> = v2_to_v1(as_v2).unwrap();
+        assert_eq!(some, back);
+
+        let none: Option<v1::PlanEntryStatus> = None;
+        let as_v2: Option<v2::PlanEntryStatus> = v1_to_v2(none).unwrap();
+        assert!(as_v2.is_none());
+    }
+
+    /// `BTreeMap` and `HashMap` blanket impls must preserve key/value pairs
+    /// across the conversion. Use enum values so both sides have to traverse
+    /// their conversion arms.
+    #[test]
+    fn map_blanket_impls_preserve_entries() {
+        use std::collections::{BTreeMap, HashMap};
+
+        // BTreeMap.
+        let mut btree: BTreeMap<String, v1::PlanEntryStatus> = BTreeMap::new();
+        btree.insert("a".to_owned(), v1::PlanEntryStatus::Pending);
+        btree.insert("b".to_owned(), v1::PlanEntryStatus::Completed);
+
+        let as_v2: BTreeMap<String, v2::PlanEntryStatus> = v1_to_v2(btree.clone()).unwrap();
+        assert_eq!(as_v2.len(), 2);
+        let back: BTreeMap<String, v1::PlanEntryStatus> = v2_to_v1(as_v2).unwrap();
+        assert_eq!(back, btree);
+
+        // HashMap.
+        let mut hm: HashMap<String, v1::ToolCallStatus> = HashMap::new();
+        hm.insert("x".to_owned(), v1::ToolCallStatus::Pending);
+        hm.insert("y".to_owned(), v1::ToolCallStatus::Failed);
+
+        let as_v2: HashMap<String, v2::ToolCallStatus> = v1_to_v2(hm.clone()).unwrap();
+        let back: HashMap<String, v1::ToolCallStatus> = v2_to_v1(as_v2).unwrap();
+        assert_eq!(back, hm);
+
+        // Empty maps must also survive — empty-collection edge cases tend
+        // to be where iterator-based impls miss the boundary.
+        let empty: BTreeMap<String, v1::PlanEntryStatus> = BTreeMap::new();
+        let as_v2: BTreeMap<String, v2::PlanEntryStatus> = v1_to_v2(empty.clone()).unwrap();
+        assert!(as_v2.is_empty());
+    }
+
+    /// The public `v1_to_v2` and `v2_to_v1` free functions delegate to the
+    /// trait, but consumers may import them directly without realizing they
+    /// are thin wrappers. Hold their contract.
+    #[test]
+    fn public_helpers_match_trait_methods() {
+        let priority = v1::PlanEntryPriority::Medium;
+        assert_eq!(
+            v1_to_v2(priority.clone()).unwrap(),
+            priority.into_v2().unwrap()
+        );
+
+        let status_v2 = v2::PlanEntryStatus::Completed;
+        assert_eq!(
+            v2_to_v1(status_v2.clone()).unwrap(),
+            status_v2.into_v1().unwrap()
+        );
+    }
 }
