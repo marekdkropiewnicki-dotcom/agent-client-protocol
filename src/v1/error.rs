@@ -370,4 +370,250 @@ mod tests {
             );
         }
     }
+
+    /// Every convenience constructor must round-trip its code through the i32
+    /// representation and emit the strum-defined default message. If any of
+    /// these regress, the wire `code`/`message` clients see will be wrong.
+    #[test]
+    fn convenience_constructors_carry_code_and_default_message() {
+        let cases: Vec<(Error, ErrorCode, i32, &str)> = vec![
+            (Error::parse_error(), ErrorCode::ParseError, -32700, "Parse error"),
+            (Error::invalid_request(), ErrorCode::InvalidRequest, -32600, "Invalid request"),
+            (Error::method_not_found(), ErrorCode::MethodNotFound, -32601, "Method not found"),
+            (Error::invalid_params(), ErrorCode::InvalidParams, -32602, "Invalid params"),
+            (Error::internal_error(), ErrorCode::InternalError, -32603, "Internal error"),
+            (Error::auth_required(), ErrorCode::AuthRequired, -32000, "Authentication required"),
+        ];
+
+        for (err, code, code_i32, message) in cases {
+            assert_eq!(err.code, code, "code mismatch for {message}");
+            assert_eq!(i32::from(err.code), code_i32, "i32 mismatch for {message}");
+            assert_eq!(err.message, message);
+            assert!(err.data.is_none(), "default constructor should not carry data");
+        }
+    }
+
+    #[cfg(feature = "unstable_cancel_request")]
+    #[test]
+    fn request_cancelled_constructor_carries_code_and_message() {
+        let err = Error::request_cancelled();
+        assert_eq!(err.code, ErrorCode::RequestCancelled);
+        assert_eq!(i32::from(err.code), -32800);
+        assert_eq!(err.message, "Request cancelled");
+    }
+
+    #[cfg(feature = "unstable_elicitation")]
+    #[test]
+    fn url_elicitation_required_constructor_carries_code_and_message() {
+        let err = Error::url_elicitation_required();
+        assert_eq!(err.code, ErrorCode::UrlElicitationRequired);
+        assert_eq!(i32::from(err.code), -32042);
+        assert_eq!(err.message, "URL elicitation required");
+    }
+
+    /// `Error::new` accepts a raw i32 code and arbitrary message — unknown
+    /// codes must round-trip through `ErrorCode::Other` (no silent coercion).
+    #[test]
+    fn new_constructor_accepts_arbitrary_codes_and_messages() {
+        let err = Error::new(-1234, "boom");
+        assert_eq!(err.code, ErrorCode::Other(-1234));
+        assert_eq!(i32::from(err.code), -1234);
+        assert_eq!(err.message, "boom");
+        assert!(err.data.is_none());
+
+        // A well-known code passed through `new` still resolves to the typed variant.
+        let err = Error::new(-32601, "custom-message");
+        assert_eq!(err.code, ErrorCode::MethodNotFound);
+        assert_eq!(err.message, "custom-message");
+    }
+
+    /// `data(...)` accepts both raw JSON values and strings via `IntoOption`,
+    /// and must overwrite any previously-attached data when chained.
+    #[test]
+    fn data_builder_attaches_and_overwrites() {
+        let err = Error::internal_error().data(serde_json::json!({"reason": "x"}));
+        assert_eq!(err.data, Some(serde_json::json!({"reason": "x"})));
+
+        // String slices go through `IntoOption<serde_json::Value> for &str`.
+        let err = Error::invalid_params().data("bad payload");
+        assert_eq!(err.data, Some(serde_json::Value::String("bad payload".into())));
+
+        // Chained calls replace earlier data.
+        let err = Error::invalid_params()
+            .data("first")
+            .data(serde_json::json!(42));
+        assert_eq!(err.data, Some(serde_json::json!(42)));
+    }
+
+    /// `From<ErrorCode>` matches the public `Error::new(code, code.to_string())`
+    /// shape; this keeps `?` on an `ErrorCode` aligned with the named helpers.
+    #[test]
+    fn error_code_into_error_matches_default_constructor() {
+        let from_code: Error = ErrorCode::InvalidRequest.into();
+        let from_helper = Error::invalid_request();
+        assert_eq!(from_code.code, from_helper.code);
+        assert_eq!(from_code.message, from_helper.message);
+        assert!(from_code.data.is_none());
+    }
+
+    /// `Display` has three branches; lock all three down so user-visible
+    /// formatting cannot silently regress.
+    #[test]
+    fn display_uses_message_then_data_when_present() {
+        let err = Error::method_not_found();
+        assert_eq!(err.to_string(), "Method not found");
+
+        // With a non-string data payload, Display appends pretty JSON.
+        let err = Error::invalid_params().data(serde_json::json!({"field": "name"}));
+        let rendered = err.to_string();
+        assert!(
+            rendered.starts_with("Invalid params: "),
+            "unexpected prefix in {rendered:?}"
+        );
+        assert!(rendered.contains("\"field\""), "missing JSON body in {rendered:?}");
+        assert!(rendered.contains("\"name\""), "missing JSON body in {rendered:?}");
+    }
+
+    /// Empty-message branch of `Display`: falls back to the numeric code.
+    #[test]
+    fn display_falls_back_to_code_for_empty_messages() {
+        let err = Error::new(-32603, "");
+        assert_eq!(err.to_string(), "-32603");
+
+        let err = Error::new(-32603, "").data("aux");
+        assert_eq!(err.to_string(), "-32603: \"aux\"");
+    }
+
+    /// `Debug` on `ErrorCode` follows the "code: name" shape and is used in
+    /// log lines all over the SDK; it must not regress to the strum default.
+    #[test]
+    fn error_code_debug_uses_code_then_name() {
+        assert_eq!(format!("{:?}", ErrorCode::ParseError), "-32700: Parse error");
+        assert_eq!(
+            format!("{:?}", ErrorCode::Other(-1)),
+            "-1: Unknown error"
+        );
+    }
+
+    /// `From<serde_json::Error>` is the conventional bridge between serde
+    /// failures and JSON-RPC; it must produce `InvalidParams` and preserve
+    /// the underlying error string in `data`.
+    #[test]
+    fn from_serde_json_error_yields_invalid_params() {
+        let serde_err = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        let serde_msg = serde_err.to_string();
+        let acp_err: Error = serde_err.into();
+
+        assert_eq!(acp_err.code, ErrorCode::InvalidParams);
+        assert_eq!(acp_err.message, "Invalid params");
+        assert_eq!(acp_err.data, Some(serde_json::Value::String(serde_msg)));
+    }
+
+    /// The `From<anyhow::Error>` impl has two branches: if the source is
+    /// already an `Error`, it is unwrapped via downcast; otherwise it is
+    /// converted to `InternalError`. Both branches must work, otherwise
+    /// errors propagated through `anyhow::Result` would be double-wrapped
+    /// or lose their original code.
+    #[test]
+    fn from_anyhow_downcasts_existing_acp_error() {
+        let original = Error::auth_required().data("token expired");
+        let anyhow_err: anyhow::Error = original.clone().into();
+        let recovered: Error = anyhow_err.into();
+        assert_eq!(recovered, original);
+    }
+
+    #[test]
+    fn from_anyhow_wraps_foreign_error_as_internal() {
+        #[derive(Debug)]
+        struct Custom;
+        impl std::fmt::Display for Custom {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("custom-error-display")
+            }
+        }
+        impl std::error::Error for Custom {}
+
+        let anyhow_err = anyhow::Error::new(Custom);
+        let acp_err: Error = anyhow_err.into();
+
+        assert_eq!(acp_err.code, ErrorCode::InternalError);
+        assert_eq!(
+            acp_err.data,
+            Some(serde_json::Value::String("custom-error-display".to_owned()))
+        );
+    }
+
+    /// `into_internal_error` is the public alternative to the anyhow bridge —
+    /// it must preserve the source's Display in `data`.
+    #[test]
+    fn into_internal_error_captures_display_in_data() {
+        #[derive(Debug)]
+        struct E;
+        impl std::fmt::Display for E {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("oops")
+            }
+        }
+        impl std::error::Error for E {}
+
+        let err = Error::into_internal_error(E);
+        assert_eq!(err.code, ErrorCode::InternalError);
+        assert_eq!(err.data, Some(serde_json::Value::String("oops".to_owned())));
+    }
+
+    /// `resource_not_found` has both a no-URI and a with-URI branch; the
+    /// with-URI branch must place the URI under the `uri` key (clients rely
+    /// on this exact shape to surface "go to file" affordances).
+    #[test]
+    fn resource_not_found_attaches_uri_when_provided() {
+        let bare = Error::resource_not_found(None);
+        assert_eq!(bare.code, ErrorCode::ResourceNotFound);
+        assert_eq!(bare.message, "Resource not found");
+        assert!(bare.data.is_none());
+
+        let with_uri = Error::resource_not_found(Some("file:///x".to_owned()));
+        assert_eq!(with_uri.code, ErrorCode::ResourceNotFound);
+        assert_eq!(with_uri.data, Some(serde_json::json!({"uri": "file:///x"})));
+    }
+
+    /// `ErrorCode` is `#[non_exhaustive]` plus an explicit `Other(i32)` escape
+    /// hatch. Unknown codes must always round-trip through `Other` so newer
+    /// agents talking to older SDKs (or vice versa) do not lose the wire
+    /// value.
+    #[test]
+    fn unknown_error_codes_round_trip_through_other() {
+        for value in [0, -1, -32099, -33000, i32::MIN, i32::MAX] {
+            let code: ErrorCode = value.into();
+            assert_eq!(code, ErrorCode::Other(value));
+            assert_eq!(i32::from(code), value);
+
+            let json = serde_json::to_value(code).unwrap();
+            assert_eq!(json, serde_json::json!(value));
+            let parsed: ErrorCode = serde_json::from_value(json).unwrap();
+            assert_eq!(parsed, ErrorCode::Other(value));
+        }
+    }
+
+    /// The full `Error` payload must round-trip through JSON in the JSON-RPC
+    /// shape (`code`, `message`, optional `data`).
+    #[test]
+    fn error_json_round_trip_preserves_all_fields() {
+        let err = Error::invalid_params().data(serde_json::json!({"field": "uri"}));
+
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["code"], serde_json::json!(-32602));
+        assert_eq!(json["message"], "Invalid params");
+        assert_eq!(json["data"], serde_json::json!({"field": "uri"}));
+
+        let round_tripped: Error = serde_json::from_value(json).unwrap();
+        assert_eq!(round_tripped, err);
+
+        // `data: None` must be omitted via `skip_serializing_none`, not
+        // serialized as `null` — otherwise older SDKs that reject `null` on
+        // `data` would break.
+        let bare = Error::method_not_found();
+        let json = serde_json::to_value(&bare).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(!obj.contains_key("data"), "data should be omitted, got {obj:?}");
+    }
 }
