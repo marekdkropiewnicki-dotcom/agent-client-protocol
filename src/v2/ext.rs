@@ -86,3 +86,62 @@ impl ExtNotification {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{from_value, json, to_value};
+
+    /// `ExtRequest` is `#[serde(transparent)]` over its `params` and the
+    /// `method` field is `#[serde(skip)]` (it travels in the JSON-RPC
+    /// envelope, not in the params). Removing either would silently break
+    /// every extension method.
+    #[test]
+    fn ext_request_serializes_only_params_transparently() {
+        let raw: Arc<RawValue> = serde_json::value::to_raw_value(&json!({"x": 1}))
+            .unwrap()
+            .into();
+        let request = ExtRequest::new("_custom/ping", raw);
+
+        let wire = to_value(&request).unwrap();
+        assert_eq!(wire, json!({ "x": 1 }));
+    }
+
+    /// On the receive side, `method` defaults to the empty string because
+    /// it doesn't travel on the wire - routing code is responsible for
+    /// populating it from the JSON-RPC envelope.
+    #[test]
+    fn ext_request_deserializes_with_empty_method_when_only_params_are_on_the_wire() {
+        let request: ExtRequest = from_value(json!({"x": 1})).unwrap();
+        assert_eq!(&*request.method, "");
+        assert_eq!(
+            from_value::<serde_json::Value>(request.params.get().parse().unwrap()).unwrap(),
+            json!({"x": 1})
+        );
+    }
+
+    /// `ExtResponse` is `#[serde(transparent)]` over an `Arc<RawValue>`,
+    /// so the wire shape is exactly the inner JSON. Any wrapper would be
+    /// a breaking change for every existing extension.
+    #[test]
+    fn ext_response_is_transparent_over_raw_value() {
+        let raw: Arc<RawValue> = serde_json::value::to_raw_value(&json!([1, 2, 3]))
+            .unwrap()
+            .into();
+        let response = ExtResponse::new(raw);
+        assert_eq!(to_value(&response).unwrap(), json!([1, 2, 3]));
+    }
+
+    /// Mirror of `ext_request_serializes_only_params_transparently` for
+    /// notifications.
+    #[test]
+    fn ext_notification_serializes_only_params_transparently() {
+        let raw: Arc<RawValue> = serde_json::value::to_raw_value(&json!({"event": "tick"}))
+            .unwrap()
+            .into();
+        let notification = ExtNotification::new("_custom/tick", raw);
+
+        let wire = to_value(&notification).unwrap();
+        assert_eq!(wire, json!({ "event": "tick" }));
+    }
+}
