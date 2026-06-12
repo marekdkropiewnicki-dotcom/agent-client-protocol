@@ -672,3 +672,204 @@ impl ToolCallLocation {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TextContent;
+    use serde_json::json;
+
+    /// `ToolKind` is `#[serde(rename_all = "snake_case")]` with `Other` as the
+    /// `#[serde(other)]` fallback. Locking the wire spelling of each variant
+    /// (especially the recently added `SwitchMode`) guards against accidental
+    /// camelCase regressions that would silently break every client.
+    #[test]
+    fn tool_kind_wire_format_is_snake_case() {
+        let cases = [
+            (ToolKind::Read, "read"),
+            (ToolKind::Edit, "edit"),
+            (ToolKind::Delete, "delete"),
+            (ToolKind::Move, "move"),
+            (ToolKind::Search, "search"),
+            (ToolKind::Execute, "execute"),
+            (ToolKind::Think, "think"),
+            (ToolKind::Fetch, "fetch"),
+            (ToolKind::SwitchMode, "switch_mode"),
+            (ToolKind::Other, "other"),
+        ];
+
+        for (kind, wire) in cases {
+            let actual = serde_json::to_value(kind).unwrap();
+            assert_eq!(actual, json!(wire), "wire spelling for {kind:?}");
+
+            let round: ToolKind = serde_json::from_value(json!(wire)).unwrap();
+            assert_eq!(round, kind);
+        }
+    }
+
+    /// Unknown `ToolKind` values must decode to `Other` so future variants
+    /// added by newer agents don't break older clients. This is the contract
+    /// the `#[serde(other)]` attribute on the enum is meant to provide.
+    #[test]
+    fn tool_kind_unknown_falls_back_to_other() {
+        let parsed: ToolKind = serde_json::from_value(json!("not_a_real_kind")).unwrap();
+        assert_eq!(parsed, ToolKind::Other);
+    }
+
+    /// `ToolCallStatus` is also `snake_case`. Pin all variants because a
+    /// rename would invert the status semantics for every running session.
+    #[test]
+    fn tool_call_status_wire_format_is_snake_case() {
+        let cases = [
+            (ToolCallStatus::Pending, "pending"),
+            (ToolCallStatus::InProgress, "in_progress"),
+            (ToolCallStatus::Completed, "completed"),
+            (ToolCallStatus::Failed, "failed"),
+        ];
+
+        for (status, wire) in cases {
+            assert_eq!(serde_json::to_value(status).unwrap(), json!(wire));
+            let round: ToolCallStatus = serde_json::from_value(json!(wire)).unwrap();
+            assert_eq!(round, status);
+        }
+    }
+
+    /// A freshly-constructed `ToolCall` should serialize to the minimal wire
+    /// shape: the default `ToolKind::Other` and `ToolCallStatus::Pending` are
+    /// elided via `skip_serializing_if`, empty `content`/`locations` arrays
+    /// drop out via `Vec::is_empty`, and all `None` options disappear.
+    /// If any of these defaults grow into the wire format by accident, every
+    /// tool-call notification gets noisier (and arguably wrong).
+    #[test]
+    fn tool_call_default_fields_are_skipped_on_the_wire() {
+        let call = ToolCall::new("tc_1", "Run something");
+        let serialized = serde_json::to_value(&call).unwrap();
+        assert_eq!(
+            serialized,
+            json!({
+                "toolCallId": "tc_1",
+                "title": "Run something",
+            })
+        );
+    }
+
+    /// `ToolCall::update` is the in-place merge used by SDKs to apply a
+    /// `ToolCallUpdate` to an existing call. Each field has its own merge
+    /// rule (`None` means "leave alone"; `Some` overwrites). This test
+    /// exercises both the overwrite and the no-op paths in a single update.
+    #[test]
+    fn tool_call_update_overwrites_only_provided_fields() {
+        let mut call = ToolCall::new("tc_1", "old title")
+            .kind(ToolKind::Read)
+            .status(ToolCallStatus::Pending)
+            .content(vec![ToolCallContent::from("first")])
+            .locations(vec![ToolCallLocation::new("/a")])
+            .raw_input(json!({"orig": true}))
+            .raw_output(json!({"orig": "out"}));
+
+        // Only title, status, and locations are set on the update. The rest
+        // must be preserved exactly because the update fields are `None`.
+        let fields = ToolCallUpdateFields::new()
+            .title(String::from("new title"))
+            .status(ToolCallStatus::Completed)
+            .locations(vec![
+                ToolCallLocation::new("/b"),
+                ToolCallLocation::new("/c"),
+            ]);
+
+        call.update(fields);
+
+        assert_eq!(call.title, "new title");
+        assert_eq!(call.status, ToolCallStatus::Completed);
+        // Unchanged because update.kind is None.
+        assert_eq!(call.kind, ToolKind::Read);
+        // Unchanged because update.content is None.
+        assert_eq!(call.content, vec![ToolCallContent::from("first")]);
+        // Replaced (not extended) by the update.
+        assert_eq!(
+            call.locations,
+            vec![ToolCallLocation::new("/b"), ToolCallLocation::new("/c")]
+        );
+        // Raw input/output untouched because they were None on the update.
+        assert_eq!(call.raw_input, Some(json!({"orig": true})));
+        assert_eq!(call.raw_output, Some(json!({"orig": "out"})));
+    }
+
+    /// `ToolCallUpdateFields::raw_input(None)` is intentionally a no-op:
+    /// the update model only ever sets fields, it never clears them. This
+    /// matches the behaviour of `ToolCall::update`, which only sets
+    /// `raw_input` when the update's `Option` is `Some`.
+    #[test]
+    fn tool_call_update_does_not_clear_raw_input_when_update_omits_it() {
+        let mut call = ToolCall::new("tc_1", "title").raw_input(json!({"v": 1}));
+        let fields = ToolCallUpdateFields::new().status(ToolCallStatus::InProgress);
+        call.update(fields);
+
+        assert_eq!(call.status, ToolCallStatus::InProgress);
+        assert_eq!(call.raw_input, Some(json!({"v": 1})));
+    }
+
+    /// `From<ToolCall> for ToolCallUpdate` followed by `TryFrom` back to
+    /// `ToolCall` must round-trip cleanly. Any new field added to `ToolCall`
+    /// that isn't mirrored in both conversions will trip this test.
+    #[test]
+    fn tool_call_round_trips_through_update() {
+        let original = ToolCall::new("tc_42", "Compile")
+            .kind(ToolKind::Execute)
+            .status(ToolCallStatus::InProgress)
+            .content(vec![ToolCallContent::Content(Content::new(
+                ContentBlock::Text(TextContent::new("log line")),
+            ))])
+            .locations(vec![ToolCallLocation::new("/main.rs").line(7)])
+            .raw_input(json!({"cmd": "cargo build"}))
+            .raw_output(json!({"ok": true}));
+
+        let update: ToolCallUpdate = original.clone().into();
+        let recovered: ToolCall = ToolCall::try_from(update).unwrap();
+        assert_eq!(original, recovered);
+    }
+
+    /// `TryFrom<ToolCallUpdate> for ToolCall` requires a non-None `title`
+    /// because a fresh tool call has no useful display string without it.
+    /// Removing this guard would let half-formed updates silently become
+    /// tool calls with an empty title.
+    #[test]
+    fn tool_call_try_from_update_requires_title() {
+        let update = ToolCallUpdate::new(
+            "tc_3",
+            ToolCallUpdateFields::new().status(ToolCallStatus::InProgress),
+        );
+
+        let err = ToolCall::try_from(update).unwrap_err();
+        assert_eq!(err.code, crate::ErrorCode::InvalidParams);
+    }
+
+    /// `ToolCallContent` is a tagged enum keyed on `"type"`. Pin the wire
+    /// spelling of each discriminator so a rename surfaces at test time
+    /// instead of at runtime in every editor talking to the agent.
+    #[test]
+    fn tool_call_content_uses_type_discriminator() {
+        let cases = [
+            (
+                ToolCallContent::Content(Content::new(ContentBlock::Text(TextContent::new(
+                    "hello",
+                )))),
+                "content",
+            ),
+            (ToolCallContent::Diff(Diff::new("/a.txt", "new")), "diff"),
+            (
+                ToolCallContent::Terminal(Terminal::new("term_1")),
+                "terminal",
+            ),
+        ];
+
+        for (variant, expected_tag) in cases {
+            let value = serde_json::to_value(&variant).unwrap();
+            let tag = value
+                .get("type")
+                .and_then(|v| v.as_str())
+                .expect("expected `type` discriminator");
+            assert_eq!(tag, expected_tag, "wire tag for {variant:?}");
+        }
+    }
+}
