@@ -152,7 +152,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// Locks the snake_case wire spelling of every priority. A rename to
+    /// Locks the `snake_case` wire spelling of every priority. A rename to
     /// camelCase would silently downgrade entries on the receiver side.
     #[test]
     fn plan_entry_priority_wire_format_is_snake_case() {
@@ -253,8 +253,7 @@ mod tests {
         let null_entries: Plan = serde_json::from_value(json!({ "entries": null })).unwrap();
         assert!(null_entries.entries.is_empty());
 
-        let stringy_entries: Plan =
-            serde_json::from_value(json!({ "entries": "oops" })).unwrap();
+        let stringy_entries: Plan = serde_json::from_value(json!({ "entries": "oops" })).unwrap();
         assert!(stringy_entries.entries.is_empty());
 
         let object_entries: Plan =

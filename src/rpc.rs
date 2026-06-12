@@ -223,8 +223,7 @@ mod tests {
 
     #[test]
     fn response_new_maps_err_to_error_variant() {
-        let response: Response<i32, &'static str> =
-            Response::new(String::from("req"), Err("boom"));
+        let response: Response<i32, &'static str> = Response::new(String::from("req"), Err("boom"));
 
         match response {
             Response::Error { id, error } => {

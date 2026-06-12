@@ -151,7 +151,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// Locks the snake_case wire spelling of every priority. `Medium` and
+    /// Locks the `snake_case` wire spelling of every priority. `Medium` and
     /// `Low` are not exercised anywhere else in the test suite, and a
     /// rename to camelCase would silently downgrade every entry to the
     /// default priority on the receiver side.
@@ -178,7 +178,7 @@ mod tests {
     /// `InProgress` is the easy one to break: `rename_all = "snake_case"`
     /// must emit `in_progress`, not `inProgress` or `InProgress`. Pin all
     /// three variants so a rename surfaces as a test failure instead of
-    /// silently mis-classifying every running plan entry on the wire.
+    /// silently misclassifying every running plan entry on the wire.
     #[test]
     fn plan_entry_status_wire_format_is_snake_case() {
         let cases = [
@@ -276,8 +276,7 @@ mod tests {
         let null_entries: Plan = serde_json::from_value(json!({ "entries": null })).unwrap();
         assert!(null_entries.entries.is_empty());
 
-        let stringy_entries: Plan =
-            serde_json::from_value(json!({ "entries": "oops" })).unwrap();
+        let stringy_entries: Plan = serde_json::from_value(json!({ "entries": "oops" })).unwrap();
         assert!(stringy_entries.entries.is_empty());
 
         let object_entries: Plan =

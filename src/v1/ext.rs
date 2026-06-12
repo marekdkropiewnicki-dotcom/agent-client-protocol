@@ -105,7 +105,9 @@ mod tests {
     /// in an extra object, both of which silently break every extension.
     #[test]
     fn ext_request_serializes_only_params_transparently() {
-        let raw: Arc<RawValue> = serde_json::value::to_raw_value(&json!({"x": 1})).unwrap().into();
+        let raw: Arc<RawValue> = serde_json::value::to_raw_value(&json!({"x": 1}))
+            .unwrap()
+            .into();
         let request = ExtRequest::new("_custom/ping", raw);
 
         let wire = to_value(&request).unwrap();
@@ -122,7 +124,8 @@ mod tests {
     fn ext_request_deserializes_with_empty_method_when_only_params_are_on_the_wire() {
         let request: ExtRequest = from_value(json!({"x": 1})).unwrap();
         assert_eq!(&*request.method, "");
-        assert_eq!(from_value::<serde_json::Value>(request.params.get().parse().unwrap()).unwrap(),
+        assert_eq!(
+            from_value::<serde_json::Value>(request.params.get().parse().unwrap()).unwrap(),
             json!({"x": 1})
         );
     }
@@ -132,7 +135,9 @@ mod tests {
     /// be an incompatible change for every existing extension.
     #[test]
     fn ext_response_is_transparent_over_raw_value() {
-        let raw: Arc<RawValue> = serde_json::value::to_raw_value(&json!([1, 2, 3])).unwrap().into();
+        let raw: Arc<RawValue> = serde_json::value::to_raw_value(&json!([1, 2, 3]))
+            .unwrap()
+            .into();
         let response = ExtResponse::new(raw);
         assert_eq!(to_value(&response).unwrap(), json!([1, 2, 3]));
     }
