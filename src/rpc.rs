@@ -188,6 +188,151 @@ mod tests {
     }
 
     #[test]
+    fn id_from_string_and_i64() {
+        // The `#[from(String, i64)]` derive on `RequestId` powers `.into()`
+        // calls throughout the crate (and downstream SDKs). If either impl
+        // is dropped, callers silently lose ergonomic conversions and may
+        // pick up an unexpected variant via type inference.
+        let from_string: RequestId = String::from("abc").into();
+        assert_eq!(from_string, RequestId::Str("abc".to_owned()));
+
+        let from_i64: RequestId = 42_i64.into();
+        assert_eq!(from_i64, RequestId::Number(42));
+
+        // Negative ids are valid per the JSON-RPC spec.
+        let negative: RequestId = (-1_i64).into();
+        assert_eq!(negative, RequestId::Number(-1));
+    }
+
+    #[test]
+    fn response_new_maps_ok_to_result_variant() {
+        // `Response::new` is the canonical way SDK glue code turns a
+        // `Result<R, E>` back into a wire response. Inverting the mapping
+        // (e.g. sending `Ok` payloads under the `error` key) would silently
+        // turn successful handler returns into errors for every peer.
+        let response: Response<i32, &'static str> = Response::new(1, Ok(7));
+
+        match response {
+            Response::Result { id, result } => {
+                assert_eq!(id, RequestId::Number(1));
+                assert_eq!(result, 7);
+            }
+            Response::Error { .. } => panic!("Ok must map to Response::Result"),
+        }
+    }
+
+    #[test]
+    fn response_new_maps_err_to_error_variant() {
+        let response: Response<i32, &'static str> =
+            Response::new(String::from("req"), Err("boom"));
+
+        match response {
+            Response::Error { id, error } => {
+                assert_eq!(id, RequestId::Str("req".to_owned()));
+                assert_eq!(error, "boom");
+            }
+            Response::Result { .. } => panic!("Err must map to Response::Error"),
+        }
+    }
+
+    #[test]
+    fn response_wire_shape_uses_result_or_error_key() {
+        // The `Response` enum is `#[serde(untagged)]`. The result variant
+        // must emit `{id, result}` and the error variant `{id, error}` so
+        // peers (which are not Rust-aware) can route by key. Any accidental
+        // rename of these field names is an unrecoverable wire break.
+        let ok: Response<i32, String> = Response::new(1, Ok(42));
+        assert_eq!(
+            serde_json::to_value(&ok).unwrap(),
+            json!({ "id": 1, "result": 42 })
+        );
+
+        let err: Response<i32, String> = Response::new(1, Err("nope".to_owned()));
+        assert_eq!(
+            serde_json::to_value(&err).unwrap(),
+            json!({ "id": 1, "error": "nope" })
+        );
+    }
+
+    #[test]
+    fn notification_with_missing_params_deserializes_to_none() {
+        // Notifications without a `"params"` key should round-trip cleanly to
+        // `params: None` so peers that omit the field (instead of sending
+        // `"params": null`) are still accepted.
+        let parsed: Notification<i32> = serde_json::from_value(json!({
+            "method": "ping",
+        }))
+        .unwrap();
+
+        assert_eq!(&*parsed.method, "ping");
+        assert_eq!(parsed.params, None);
+    }
+
+    #[test]
+    fn json_rpc_message_requires_version_2_0() {
+        // The `JsonRpcMessage` envelope is the spec-mandated wrapper. The
+        // `JsonRpcVersion` enum only has a `V2` variant tagged `"2.0"`, so
+        // any other version (or a missing `jsonrpc` field) must fail to
+        // deserialize. Without this guard a peer could ship 1.0 messages
+        // and we would silently accept them.
+        let valid: serde_json::Value = json!({
+            "jsonrpc": "2.0",
+            "method": "ping",
+        });
+        let parsed: JsonRpcMessage<Notification<i32>> = serde_json::from_value(valid).unwrap();
+        assert_eq!(&*parsed.into_inner().method, "ping");
+
+        let wrong_version = json!({
+            "jsonrpc": "1.0",
+            "method": "ping",
+        });
+        assert!(
+            serde_json::from_value::<JsonRpcMessage<Notification<i32>>>(wrong_version).is_err(),
+            "expected JsonRpcMessage to reject jsonrpc != 2.0"
+        );
+
+        let missing_version = json!({
+            "method": "ping",
+        });
+        assert!(
+            serde_json::from_value::<JsonRpcMessage<Notification<i32>>>(missing_version).is_err(),
+            "expected JsonRpcMessage to require the jsonrpc field"
+        );
+    }
+
+    #[test]
+    fn json_rpc_message_serializes_with_jsonrpc_2_0_and_flattens_inner() {
+        // `wrap` must always emit `"jsonrpc": "2.0"` and the inner message
+        // must be flattened next to it (not nested under a `"message"` key).
+        let envelope = JsonRpcMessage::wrap(Notification::<i32> {
+            method: "ping".into(),
+            params: Some(7),
+        });
+
+        let serialized: Value = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(
+            serialized,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "ping",
+                "params": 7,
+            })
+        );
+    }
+
+    #[test]
+    fn json_rpc_message_wrap_and_into_inner_round_trip() {
+        let notif = Notification::<i32> {
+            method: "ping".into(),
+            params: Some(7),
+        };
+        let original_method = notif.method.clone();
+        let unwrapped = JsonRpcMessage::wrap(notif).into_inner();
+        assert_eq!(unwrapped.method, original_method);
+        assert_eq!(unwrapped.params, Some(7));
+    }
+
+    #[test]
     fn notification_wire_format() {
         // Test client -> agent notification wire format
         let outgoing_msg = JsonRpcMessage::wrap(Notification {
