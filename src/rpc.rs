@@ -249,11 +249,12 @@ mod tests {
     #[test]
     fn response_untagged_deserialization_picks_result_or_error() {
         // A response with a `result` field should deserialize into `Result`.
-        let success: Response<serde_json::Value, serde_json::Value> = serde_json::from_value(json!({
-            "id": 1,
-            "result": {"ok": true},
-        }))
-        .unwrap();
+        let success: Response<serde_json::Value, serde_json::Value> =
+            serde_json::from_value(json!({
+                "id": 1,
+                "result": {"ok": true},
+            }))
+            .unwrap();
         match success {
             Response::Result { id, result } => {
                 assert_eq!(id, RequestId::Number(1));
@@ -263,15 +264,19 @@ mod tests {
         }
 
         // A response with an `error` field should deserialize into `Error`.
-        let failure: Response<serde_json::Value, serde_json::Value> = serde_json::from_value(json!({
-            "id": "req-2",
-            "error": {"code": -32601, "message": "Method not found"},
-        }))
-        .unwrap();
+        let failure: Response<serde_json::Value, serde_json::Value> =
+            serde_json::from_value(json!({
+                "id": "req-2",
+                "error": {"code": -32601, "message": "Method not found"},
+            }))
+            .unwrap();
         match failure {
             Response::Error { id, error } => {
                 assert_eq!(id, RequestId::Str("req-2".into()));
-                assert_eq!(error, json!({"code": -32601, "message": "Method not found"}));
+                assert_eq!(
+                    error,
+                    json!({"code": -32601, "message": "Method not found"})
+                );
             }
             Response::Result { .. } => panic!("expected Error variant"),
         }
