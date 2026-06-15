@@ -672,3 +672,260 @@ impl ToolCallLocation {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ContentBlock, ErrorCode, TextContent};
+    use serde_json::json;
+
+    fn sample_tool_call() -> ToolCall {
+        ToolCall::new("call_1", "initial title")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::InProgress)
+            .content(vec![ToolCallContent::Content(Content::new(
+                ContentBlock::Text(TextContent::new("body")),
+            ))])
+            .locations(vec![ToolCallLocation::new("/tmp/file").line(7)])
+            .raw_input(json!({"a": 1}))
+            .raw_output(json!({"b": 2}))
+    }
+
+    /// `ToolCall::update` must overwrite fields when the corresponding
+    /// update field is `Some`, and leave them untouched when it is `None`.
+    /// This is the core of how streaming tool-call updates are applied.
+    #[test]
+    fn update_overwrites_only_present_fields() {
+        let mut call = sample_tool_call();
+        let original_locations = call.locations.clone();
+        let original_raw_input = call.raw_input.clone();
+
+        let fields = ToolCallUpdateFields::new()
+            .title("new title")
+            .status(ToolCallStatus::Completed)
+            .raw_output(json!({"c": 3}));
+
+        call.update(fields);
+
+        assert_eq!(call.title, "new title");
+        assert_eq!(call.status, ToolCallStatus::Completed);
+        assert_eq!(call.raw_output, Some(json!({"c": 3})));
+        assert_eq!(call.kind, ToolKind::Edit, "kind must not change");
+        assert_eq!(
+            call.locations, original_locations,
+            "locations must not be cleared by an absent update field"
+        );
+        assert_eq!(
+            call.raw_input, original_raw_input,
+            "raw_input must not be cleared by an absent update field"
+        );
+        assert_eq!(
+            call.content.len(),
+            1,
+            "content must survive when not in the update"
+        );
+    }
+
+    /// An empty update must be a no-op.
+    #[test]
+    fn update_with_empty_fields_is_noop() {
+        let mut call = sample_tool_call();
+        let original = call.clone();
+        call.update(ToolCallUpdateFields::new());
+        assert_eq!(call, original);
+    }
+
+    /// An update may replace the content collection. Crucially, when
+    /// `content` is `Some(empty)`, the existing content is cleared - the
+    /// distinction between `None` and `Some(vec![])` matters for the wire.
+    #[test]
+    fn update_can_clear_content_with_some_empty_vec() {
+        let mut call = sample_tool_call();
+        call.update(ToolCallUpdateFields::new().content(vec![]));
+        assert!(call.content.is_empty());
+        assert_eq!(
+            call.locations.len(),
+            1,
+            "clearing content should not touch locations"
+        );
+    }
+
+    /// `TryFrom<ToolCallUpdate>` succeeds only when a title is present;
+    /// otherwise it errors with `InvalidParams`, preventing downstream code
+    /// from constructing a malformed tool call.
+    #[test]
+    fn try_from_update_requires_title() {
+        let update = ToolCallUpdate::new("call_2", ToolCallUpdateFields::new());
+
+        let err = ToolCall::try_from(update).expect_err("missing title must error");
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+    }
+
+    /// When title is present and other optional fields are missing,
+    /// defaults must be applied (not panics, not random values).
+    #[test]
+    fn try_from_update_populates_defaults_for_missing_fields() {
+        let update = ToolCallUpdate::new("call_3", ToolCallUpdateFields::new().title("the title"));
+
+        let call = ToolCall::try_from(update).expect("title-only update should succeed");
+        assert_eq!(call.tool_call_id, ToolCallId::new("call_3"));
+        assert_eq!(call.title, "the title");
+        assert_eq!(call.kind, ToolKind::default());
+        assert_eq!(call.status, ToolCallStatus::default());
+        assert!(call.content.is_empty());
+        assert!(call.locations.is_empty());
+        assert!(call.raw_input.is_none());
+        assert!(call.raw_output.is_none());
+        assert!(call.meta.is_none());
+    }
+
+    /// Converting `ToolCall -> ToolCallUpdate -> ToolCall` must be a
+    /// lossless round trip. The `From<ToolCall>` impl puts every field in
+    /// `Some(...)`, so `TryFrom` should reproduce the original exactly.
+    #[test]
+    fn round_trip_tool_call_through_update() {
+        let original = sample_tool_call();
+
+        let update: ToolCallUpdate = original.clone().into();
+
+        // Every populated field should be Some after the From conversion.
+        assert!(update.fields.title.is_some());
+        assert!(update.fields.kind.is_some());
+        assert!(update.fields.status.is_some());
+        assert!(update.fields.content.is_some());
+        assert!(update.fields.locations.is_some());
+        assert!(update.fields.raw_input.is_some());
+        assert!(update.fields.raw_output.is_some());
+
+        let rebuilt = ToolCall::try_from(update).expect("round trip should succeed");
+        assert_eq!(rebuilt, original);
+    }
+
+    /// The blanket `From<T: Into<ContentBlock>> for ToolCallContent` impl
+    /// must wrap strings into `Content` blocks - this is widely used by
+    /// agents that emit plain-text tool output.
+    #[test]
+    fn tool_call_content_from_string_wraps_in_content_variant() {
+        let content: ToolCallContent = "hello".to_string().into();
+        match content {
+            ToolCallContent::Content(Content { content, meta }) => {
+                assert!(meta.is_none());
+                match content {
+                    ContentBlock::Text(text) => assert_eq!(text.text, "hello"),
+                    other => panic!("expected text content, got {other:?}"),
+                }
+            }
+            other => panic!("expected Content variant, got {other:?}"),
+        }
+    }
+
+    /// `Diff` values flow through `Into<ToolCallContent>` directly into
+    /// the `Diff` variant rather than being wrapped in `Content`.
+    #[test]
+    fn tool_call_content_from_diff_uses_diff_variant() {
+        let diff = Diff::new("/tmp/x", "new").old_text("old");
+        let content: ToolCallContent = diff.clone().into();
+        match content {
+            ToolCallContent::Diff(d) => assert_eq!(d, diff),
+            other => panic!("expected Diff variant, got {other:?}"),
+        }
+    }
+
+    /// Unknown / future tool kinds must deserialize to `Other` instead of
+    /// failing the whole tool call. This is the contract the
+    /// `#[serde(other)]` attribute is enforcing.
+    #[test]
+    fn unknown_tool_kind_deserializes_to_other() {
+        let kind: ToolKind = serde_json::from_str("\"some_future_kind\"").unwrap();
+        assert_eq!(kind, ToolKind::Other);
+    }
+
+    /// `ToolKind::Other` is the default and must be omitted from the
+    /// serialized form (matches the `is_default` skip predicate).
+    /// `ToolCallStatus::Pending` follows the same rule.
+    #[test]
+    fn default_kind_and_status_are_omitted_from_serialized_tool_call() {
+        let call = ToolCall::new("c", "title");
+        let value = serde_json::to_value(&call).unwrap();
+        let obj = value.as_object().unwrap();
+        assert!(!obj.contains_key("kind"), "default kind should be skipped");
+        assert!(
+            !obj.contains_key("status"),
+            "default status should be skipped"
+        );
+        assert!(
+            !obj.contains_key("content"),
+            "empty content vec should be skipped"
+        );
+        assert!(
+            !obj.contains_key("locations"),
+            "empty locations vec should be skipped"
+        );
+    }
+
+    /// Non-default kind and status must be serialized with the protocol's
+    /// `snake_case` representation.
+    #[test]
+    fn non_default_kind_and_status_serialize_as_snake_case() {
+        let call = ToolCall::new("c", "title")
+            .kind(ToolKind::SwitchMode)
+            .status(ToolCallStatus::InProgress);
+        let value = serde_json::to_value(&call).unwrap();
+        assert_eq!(value["kind"], "switch_mode");
+        assert_eq!(value["status"], "in_progress");
+    }
+
+    /// The fall-through semantics on `ToolCallUpdateFields` differ
+    /// between `kind` and `status`, and the difference matters:
+    ///
+    /// - `ToolKind` uses `#[serde(other)]`, so unknown kinds parse as
+    ///   `Some(ToolKind::Other)` (the catch-all variant).
+    /// - `ToolCallStatus` has no catch-all, so unknown statuses fail to
+    ///   deserialize and `DefaultOnError` collapses them to `None`,
+    ///   meaning "leave the existing status alone" on update.
+    ///
+    /// In either case the surrounding update message must still parse;
+    /// the resilience contract is "one bad field never drops the whole
+    /// streaming update".
+    #[test]
+    fn invalid_kind_and_status_in_update_fields_fall_through_gracefully() {
+        let raw = json!({
+            "kind": "definitely_not_a_real_kind",
+            "status": "definitely_not_a_real_status",
+            "title": "still parsed",
+        });
+        let fields: ToolCallUpdateFields = serde_json::from_value(raw).unwrap();
+        assert_eq!(
+            fields.kind,
+            Some(ToolKind::Other),
+            "unknown kind must map to the Other catch-all"
+        );
+        assert_eq!(
+            fields.status, None,
+            "unknown status must drop to None so update preserves prior status"
+        );
+        assert_eq!(fields.title.as_deref(), Some("still parsed"));
+    }
+
+    /// Bad entries in the `content` array must be silently skipped so
+    /// one malformed chunk doesn't drop a whole streaming tool call.
+    /// `VecSkipError` enforces this.
+    #[test]
+    fn malformed_content_entries_are_skipped_not_fatal() {
+        let raw = json!({
+            "toolCallId": "tc",
+            "title": "t",
+            "content": [
+                {"type": "content", "content": {"type": "text", "text": "ok"}},
+                {"type": "made_up_variant_that_should_be_skipped"},
+                {"type": "diff", "path": "/x", "newText": "n"}
+            ]
+        });
+        let call: ToolCall = serde_json::from_value(raw).unwrap();
+        assert_eq!(
+            call.content.len(),
+            2,
+            "the malformed middle entry should be skipped, leaving 2 good ones"
+        );
+    }
+}

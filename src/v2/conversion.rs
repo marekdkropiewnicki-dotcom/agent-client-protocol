@@ -9513,4 +9513,339 @@ mod tests {
             ))
         );
     }
+
+    /// Every variant of `ToolKind` must round-trip across the v1<->v2
+    /// boundary. The conversion impl is a plain `match` and the failure
+    /// mode of a missing arm is silent (it would just be a compile error
+    /// in the cross-version test setup, but only if every variant is
+    /// actually exercised). Listing every variant pins the contract.
+    #[test]
+    fn round_trips_every_tool_kind_variant() {
+        let variants = [
+            v1::ToolKind::Read,
+            v1::ToolKind::Edit,
+            v1::ToolKind::Delete,
+            v1::ToolKind::Move,
+            v1::ToolKind::Search,
+            v1::ToolKind::Execute,
+            v1::ToolKind::Think,
+            v1::ToolKind::Fetch,
+            v1::ToolKind::SwitchMode,
+            v1::ToolKind::Other,
+        ];
+        for kind in variants {
+            assert_v1_round_trip::<v1::ToolKind, v2::ToolKind>(kind);
+        }
+    }
+
+    /// Every variant of `ToolCallStatus` must round-trip across v1<->v2.
+    #[test]
+    fn round_trips_every_tool_call_status_variant() {
+        for status in [
+            v1::ToolCallStatus::Pending,
+            v1::ToolCallStatus::InProgress,
+            v1::ToolCallStatus::Completed,
+            v1::ToolCallStatus::Failed,
+        ] {
+            assert_v1_round_trip::<v1::ToolCallStatus, v2::ToolCallStatus>(status);
+        }
+    }
+
+    /// Every variant of `PlanEntryPriority` and `PlanEntryStatus` must
+    /// round-trip across v1<->v2. These power the Plan UI on every
+    /// agent update.
+    #[test]
+    fn round_trips_every_plan_entry_enum_variant() {
+        for priority in [
+            v1::PlanEntryPriority::High,
+            v1::PlanEntryPriority::Medium,
+            v1::PlanEntryPriority::Low,
+        ] {
+            assert_v1_round_trip::<v1::PlanEntryPriority, v2::PlanEntryPriority>(priority);
+        }
+        for status in [
+            v1::PlanEntryStatus::Pending,
+            v1::PlanEntryStatus::InProgress,
+            v1::PlanEntryStatus::Completed,
+        ] {
+            assert_v1_round_trip::<v1::PlanEntryStatus, v2::PlanEntryStatus>(status);
+        }
+    }
+
+    /// Every variant of `PermissionOptionKind` must round-trip
+    /// across v1<->v2. Misrouting `AllowOnce`/`AllowAlways` or
+    /// `RejectOnce`/`RejectAlways` would silently change a user's
+    /// "remember this decision" setting.
+    #[test]
+    fn round_trips_every_permission_option_kind_variant() {
+        for kind in [
+            v1::PermissionOptionKind::AllowOnce,
+            v1::PermissionOptionKind::AllowAlways,
+            v1::PermissionOptionKind::RejectOnce,
+            v1::PermissionOptionKind::RejectAlways,
+        ] {
+            assert_v1_round_trip::<v1::PermissionOptionKind, v2::PermissionOptionKind>(kind);
+        }
+    }
+
+    /// `WriteTextFileRequest`/`WriteTextFileResponse` is the agent->client
+    /// write path; preserving `session_id`, path, and content across the
+    /// v1<->v2 boundary is required for any write-capable agent.
+    #[test]
+    fn round_trips_write_text_file_request_and_response() {
+        let request = v1::WriteTextFileRequest::new("sess", "/abs/path/file.txt", "the file body");
+        assert_v1_round_trip::<v1::WriteTextFileRequest, v2::WriteTextFileRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::WriteTextFileRequest, v2::WriteTextFileRequest>(
+            request,
+        );
+
+        let response = v1::WriteTextFileResponse::new();
+        assert_v1_round_trip::<v1::WriteTextFileResponse, v2::WriteTextFileResponse>(response);
+    }
+
+    /// `ReadTextFileRequest` carries optional `line` and `limit`. Both
+    /// must survive the round trip independently - swapping them or
+    /// dropping the limit silently would change which slice of a file
+    /// is read.
+    #[test]
+    fn round_trips_read_text_file_request_with_line_and_limit() {
+        let request = v1::ReadTextFileRequest::new("sess", "/abs/path/file.txt")
+            .line(42u32)
+            .limit(10u32);
+        assert_v1_round_trip::<v1::ReadTextFileRequest, v2::ReadTextFileRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ReadTextFileRequest, v2::ReadTextFileRequest>(request);
+
+        let no_limits = v1::ReadTextFileRequest::new("sess", "/abs/path/file.txt");
+        assert_v1_round_trip::<v1::ReadTextFileRequest, v2::ReadTextFileRequest>(no_limits);
+
+        let response = v1::ReadTextFileResponse::new("file contents go here");
+        assert_v1_round_trip::<v1::ReadTextFileResponse, v2::ReadTextFileResponse>(
+            response.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::ReadTextFileResponse, v2::ReadTextFileResponse>(
+            response,
+        );
+    }
+
+    /// Terminal lifecycle types: create, output, kill, release, wait.
+    /// Each carries IDs and optional limits/payloads. Exercising the
+    /// full lifecycle in one test guards against the (very real) risk
+    /// of one direction of a single conversion dropping a field.
+    #[test]
+    fn round_trips_full_terminal_lifecycle() {
+        let create = v1::CreateTerminalRequest::new("sess", "cargo")
+            .args(vec!["build".to_string(), "--release".to_string()])
+            .env(vec![
+                v1::EnvVariable::new("RUST_LOG", "debug"),
+                v1::EnvVariable::new("CI", "1"),
+            ])
+            .cwd(std::path::PathBuf::from("/work"))
+            .output_byte_limit(1024u64);
+        assert_v1_round_trip::<v1::CreateTerminalRequest, v2::CreateTerminalRequest>(
+            create.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::CreateTerminalRequest, v2::CreateTerminalRequest>(
+            create,
+        );
+
+        let create_response = v1::CreateTerminalResponse::new("term_1");
+        assert_v1_round_trip::<v1::CreateTerminalResponse, v2::CreateTerminalResponse>(
+            create_response,
+        );
+
+        // Exit status: both exit_code (clean exit) and signal (killed)
+        // need to round-trip, including when only one of the two is set.
+        for status in [
+            v1::TerminalExitStatus::new().exit_code(0u32),
+            v1::TerminalExitStatus::new().signal("SIGTERM".to_string()),
+            v1::TerminalExitStatus::new(),
+        ] {
+            assert_v1_round_trip::<v1::TerminalExitStatus, v2::TerminalExitStatus>(status);
+        }
+
+        let output_response = v1::TerminalOutputResponse {
+            output: "hello\nworld\n".to_string(),
+            truncated: true,
+            exit_status: Some(v1::TerminalExitStatus::new().exit_code(0u32)),
+            meta: None,
+        };
+        assert_v1_round_trip::<v1::TerminalOutputResponse, v2::TerminalOutputResponse>(
+            output_response.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::TerminalOutputResponse, v2::TerminalOutputResponse>(
+            output_response,
+        );
+
+        let output_request = v1::TerminalOutputRequest {
+            session_id: v1::SessionId::new("sess"),
+            terminal_id: v1::TerminalId::new("term_1"),
+            meta: None,
+        };
+        assert_v1_round_trip::<v1::TerminalOutputRequest, v2::TerminalOutputRequest>(
+            output_request,
+        );
+
+        let kill = v1::KillTerminalRequest {
+            session_id: v1::SessionId::new("sess"),
+            terminal_id: v1::TerminalId::new("term_1"),
+            meta: None,
+        };
+        assert_v1_round_trip::<v1::KillTerminalRequest, v2::KillTerminalRequest>(kill);
+        assert_v1_round_trip::<v1::KillTerminalResponse, v2::KillTerminalResponse>(
+            v1::KillTerminalResponse { meta: None },
+        );
+
+        let wait_req = v1::WaitForTerminalExitRequest {
+            session_id: v1::SessionId::new("sess"),
+            terminal_id: v1::TerminalId::new("term_1"),
+            meta: None,
+        };
+        assert_v1_round_trip::<v1::WaitForTerminalExitRequest, v2::WaitForTerminalExitRequest>(
+            wait_req,
+        );
+        let wait_resp = v1::WaitForTerminalExitResponse {
+            exit_status: v1::TerminalExitStatus::new().exit_code(7u32),
+            meta: None,
+        };
+        assert_v1_round_trip::<v1::WaitForTerminalExitResponse, v2::WaitForTerminalExitResponse>(
+            wait_resp,
+        );
+
+        let release = v1::ReleaseTerminalRequest {
+            session_id: v1::SessionId::new("sess"),
+            terminal_id: v1::TerminalId::new("term_1"),
+            meta: None,
+        };
+        assert_v1_round_trip::<v1::ReleaseTerminalRequest, v2::ReleaseTerminalRequest>(release);
+        assert_v1_round_trip::<v1::ReleaseTerminalResponse, v2::ReleaseTerminalResponse>(
+            v1::ReleaseTerminalResponse { meta: None },
+        );
+    }
+
+    /// `RequestPermissionRequest` is the user-facing permission flow.
+    /// Test it with a populated `ToolCallUpdate` (which itself flows
+    /// through the conversion) and multiple permission options covering
+    /// every `PermissionOptionKind` so the request can be rebuilt
+    /// faithfully when forwarded across v1<->v2.
+    #[test]
+    fn round_trips_request_permission_request_with_options_and_tool_call() {
+        let request = v1::RequestPermissionRequest::new(
+            "sess",
+            v1::ToolCallUpdate::new(
+                "tc_1",
+                v1::ToolCallUpdateFields::new()
+                    .title("apply patch")
+                    .status(v1::ToolCallStatus::Pending)
+                    .kind(v1::ToolKind::Edit),
+            ),
+            vec![
+                v1::PermissionOption::new(
+                    "allow_once",
+                    "Allow once",
+                    v1::PermissionOptionKind::AllowOnce,
+                ),
+                v1::PermissionOption::new(
+                    "allow_always",
+                    "Always allow",
+                    v1::PermissionOptionKind::AllowAlways,
+                ),
+                v1::PermissionOption::new(
+                    "reject_once",
+                    "Reject",
+                    v1::PermissionOptionKind::RejectOnce,
+                ),
+                v1::PermissionOption::new(
+                    "reject_always",
+                    "Never allow",
+                    v1::PermissionOptionKind::RejectAlways,
+                ),
+            ],
+        );
+        assert_v1_round_trip::<v1::RequestPermissionRequest, v2::RequestPermissionRequest>(
+            request.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::RequestPermissionRequest, v2::RequestPermissionRequest>(
+            request,
+        );
+    }
+
+    /// Authenticate and the recently-stabilized Logout flow are how
+    /// agents (re)establish sessions. Both must survive v1<->v2 in
+    /// both their request and response shapes.
+    #[test]
+    fn round_trips_authenticate_and_logout_flows() {
+        let auth_req = v1::AuthenticateRequest::new(v1::AuthMethodId::new("oauth"));
+        assert_v1_round_trip::<v1::AuthenticateRequest, v2::AuthenticateRequest>(auth_req.clone());
+        assert_json_eq_after_v1_to_v2::<v1::AuthenticateRequest, v2::AuthenticateRequest>(auth_req);
+
+        assert_v1_round_trip::<v1::AuthenticateResponse, v2::AuthenticateResponse>(
+            v1::AuthenticateResponse::new(),
+        );
+
+        assert_v1_round_trip::<v1::LogoutRequest, v2::LogoutRequest>(v1::LogoutRequest::new());
+        assert_v1_round_trip::<v1::LogoutResponse, v2::LogoutResponse>(v1::LogoutResponse::new());
+    }
+
+    /// `CloseSessionRequest`/`CloseSessionResponse` is the lifecycle
+    /// counterpart of session creation - dropping the `session_id`
+    /// during conversion would leak resources on the agent side.
+    #[test]
+    fn round_trips_close_session_request_and_response() {
+        let req = v1::CloseSessionRequest::new("sess_to_close");
+        assert_v1_round_trip::<v1::CloseSessionRequest, v2::CloseSessionRequest>(req.clone());
+        assert_json_eq_after_v1_to_v2::<v1::CloseSessionRequest, v2::CloseSessionRequest>(req);
+
+        assert_v1_round_trip::<v1::CloseSessionResponse, v2::CloseSessionResponse>(
+            v1::CloseSessionResponse::new(),
+        );
+    }
+
+    /// Every stable `StopReason` variant returned in `PromptResponse`
+    /// must round-trip. The Cancelled variant in particular is a
+    /// MUST-return on cancellation; a silently changed wire value
+    /// would make clients miss cancellations.
+    #[test]
+    fn round_trips_prompt_response_for_every_stop_reason() {
+        for reason in [
+            v1::StopReason::EndTurn,
+            v1::StopReason::MaxTokens,
+            v1::StopReason::MaxTurnRequests,
+            v1::StopReason::Refusal,
+            v1::StopReason::Cancelled,
+        ] {
+            let response = v1::PromptResponse::new(reason);
+            assert_v1_round_trip::<v1::PromptResponse, v2::PromptResponse>(response.clone());
+            assert_json_eq_after_v1_to_v2::<v1::PromptResponse, v2::PromptResponse>(response);
+        }
+    }
+
+    /// `ContentBlock::Audio` and `ContentBlock::Resource` (embedded
+    /// text and blob) are the two content variants the existing prompt
+    /// round-trip test does not exercise. Both must survive v1<->v2.
+    #[test]
+    fn round_trips_audio_and_embedded_resource_content_blocks() {
+        let audio = v1::ContentBlock::Audio(v1::AudioContent::new("data==", "audio/wav"));
+        let prompt_audio = v1::PromptRequest::new("sess", vec![audio]);
+        assert_v1_round_trip::<v1::PromptRequest, v2::PromptRequest>(prompt_audio.clone());
+        assert_json_eq_after_v1_to_v2::<v1::PromptRequest, v2::PromptRequest>(prompt_audio);
+
+        let text_resource = v1::ContentBlock::Resource(v1::EmbeddedResource::new(
+            v1::EmbeddedResourceResource::TextResourceContents(
+                v1::TextResourceContents::new("body", "file:///doc.md").mime_type("text/markdown"),
+            ),
+        ));
+        let prompt_text_resource = v1::PromptRequest::new("sess", vec![text_resource]);
+        assert_v1_round_trip::<v1::PromptRequest, v2::PromptRequest>(prompt_text_resource.clone());
+        assert_json_eq_after_v1_to_v2::<v1::PromptRequest, v2::PromptRequest>(prompt_text_resource);
+
+        let blob_resource = v1::ContentBlock::Resource(v1::EmbeddedResource::new(
+            v1::EmbeddedResourceResource::BlobResourceContents(
+                v1::BlobResourceContents::new("base64==", "file:///image.png")
+                    .mime_type("image/png"),
+            ),
+        ));
+        let prompt_blob_resource = v1::PromptRequest::new("sess", vec![blob_resource]);
+        assert_v1_round_trip::<v1::PromptRequest, v2::PromptRequest>(prompt_blob_resource.clone());
+        assert_json_eq_after_v1_to_v2::<v1::PromptRequest, v2::PromptRequest>(prompt_blob_resource);
+    }
 }
