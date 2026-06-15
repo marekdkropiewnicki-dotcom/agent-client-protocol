@@ -153,7 +153,7 @@ mod tests {
     use serde_json::json;
 
     /// Each `PlanEntryPriority` variant must serialize to the exact
-    /// snake_case string the spec calls out. Renaming or reordering
+    /// `snake_case` string the spec calls out. Renaming or reordering
     /// these would silently break every existing agent.
     #[test]
     fn priority_serializes_as_snake_case() {
@@ -172,9 +172,9 @@ mod tests {
     }
 
     /// Each `PlanEntryStatus` variant must serialize to the exact
-    /// snake_case string the spec calls out. The `in_progress` form is
-    /// especially easy to break (e.g. inProgress, in-progress) so it is
-    /// pinned explicitly.
+    /// `snake_case` string the spec calls out. The `in_progress` form is
+    /// especially easy to break (e.g. `inProgress`, `in-progress`) so it
+    /// is pinned explicitly.
     #[test]
     fn status_serializes_as_snake_case() {
         assert_eq!(

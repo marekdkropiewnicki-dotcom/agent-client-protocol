@@ -752,7 +752,7 @@ mod tests {
     }
 
     /// `TryFrom<ToolCallUpdate>` succeeds only when a title is present;
-    /// otherwise it errors with InvalidParams, preventing downstream code
+    /// otherwise it errors with `InvalidParams`, preventing downstream code
     /// from constructing a malformed tool call.
     #[test]
     fn try_from_update_requires_title() {
@@ -766,8 +766,7 @@ mod tests {
     /// defaults must be applied (not panics, not random values).
     #[test]
     fn try_from_update_populates_defaults_for_missing_fields() {
-        let update =
-            ToolCallUpdate::new("call_3", ToolCallUpdateFields::new().title("the title"));
+        let update = ToolCallUpdate::new("call_3", ToolCallUpdateFields::new().title("the title"));
 
         let call = ToolCall::try_from(update).expect("title-only update should succeed");
         assert_eq!(call.tool_call_id, ToolCallId::new("call_3"));
@@ -866,7 +865,7 @@ mod tests {
     }
 
     /// Non-default kind and status must be serialized with the protocol's
-    /// snake_case representation.
+    /// `snake_case` representation.
     #[test]
     fn non_default_kind_and_status_serialize_as_snake_case() {
         let call = ToolCall::new("c", "title")
