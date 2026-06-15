@@ -145,3 +145,133 @@ pub enum PlanEntryStatus {
     /// The task has been successfully completed.
     Completed,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Each `PlanEntryPriority` variant must serialize to the exact
+    /// snake_case string the spec calls out. Renaming or reordering
+    /// these would silently break every existing agent.
+    #[test]
+    fn priority_serializes_as_snake_case() {
+        assert_eq!(
+            serde_json::to_value(PlanEntryPriority::High).unwrap(),
+            json!("high")
+        );
+        assert_eq!(
+            serde_json::to_value(PlanEntryPriority::Medium).unwrap(),
+            json!("medium")
+        );
+        assert_eq!(
+            serde_json::to_value(PlanEntryPriority::Low).unwrap(),
+            json!("low")
+        );
+    }
+
+    /// Each `PlanEntryStatus` variant must serialize to the exact
+    /// snake_case string the spec calls out. The `in_progress` form is
+    /// especially easy to break (e.g. inProgress, in-progress) so it is
+    /// pinned explicitly.
+    #[test]
+    fn status_serializes_as_snake_case() {
+        assert_eq!(
+            serde_json::to_value(PlanEntryStatus::Pending).unwrap(),
+            json!("pending")
+        );
+        assert_eq!(
+            serde_json::to_value(PlanEntryStatus::InProgress).unwrap(),
+            json!("in_progress")
+        );
+        assert_eq!(
+            serde_json::to_value(PlanEntryStatus::Completed).unwrap(),
+            json!("completed")
+        );
+    }
+
+    /// Unknown priority / status values must fail loudly: the protocol
+    /// does not define a catch-all variant here, and silently coercing
+    /// an unknown priority would mislead the UI about what the agent is
+    /// actually planning.
+    #[test]
+    fn unknown_priority_and_status_fail_to_deserialize() {
+        assert!(serde_json::from_value::<PlanEntryPriority>(json!("urgent")).is_err());
+        assert!(serde_json::from_value::<PlanEntryStatus>(json!("blocked")).is_err());
+    }
+
+    /// A non-empty plan must round-trip through JSON with all fields
+    /// preserved. This is the message agents emit on every plan update.
+    #[test]
+    fn plan_round_trips_through_json() {
+        let plan = Plan::new(vec![
+            PlanEntry::new(
+                "investigate",
+                PlanEntryPriority::High,
+                PlanEntryStatus::InProgress,
+            ),
+            PlanEntry::new("write up", PlanEntryPriority::Low, PlanEntryStatus::Pending),
+        ]);
+
+        let value = serde_json::to_value(&plan).unwrap();
+        let parsed: Plan = serde_json::from_value(value).unwrap();
+        assert_eq!(plan, parsed);
+    }
+
+    /// `Plan` and `PlanEntry` must skip the optional `_meta` field when
+    /// it is `None`, otherwise every plan update would carry a
+    /// distracting `_meta: null`.
+    #[test]
+    fn meta_is_omitted_when_none() {
+        let plan = Plan::new(vec![PlanEntry::new(
+            "step",
+            PlanEntryPriority::Medium,
+            PlanEntryStatus::Completed,
+        )]);
+        let value = serde_json::to_value(&plan).unwrap();
+        let obj = value.as_object().unwrap();
+        assert!(
+            !obj.contains_key("_meta"),
+            "plan _meta should be skipped when None"
+        );
+        let entry = value["entries"][0].as_object().unwrap();
+        assert!(
+            !entry.contains_key("_meta"),
+            "entry _meta should be skipped when None"
+        );
+    }
+
+    /// Malformed entries inside the `entries` array must be silently
+    /// skipped (per `VecSkipError`) so one bad entry never drops a
+    /// whole plan update mid-stream.
+    #[test]
+    fn malformed_entries_are_skipped_not_fatal() {
+        let raw = json!({
+            "entries": [
+                {
+                    "content": "ok",
+                    "priority": "high",
+                    "status": "pending"
+                },
+                {
+                    "content": "bad - unknown priority",
+                    "priority": "urgent",
+                    "status": "pending"
+                },
+                {
+                    "content": "also ok",
+                    "priority": "low",
+                    "status": "completed"
+                }
+            ]
+        });
+        let plan: Plan = serde_json::from_value(raw).unwrap();
+        assert_eq!(
+            plan.entries.len(),
+            2,
+            "the bad middle entry should be skipped, leaving 2 good ones"
+        );
+        assert_eq!(plan.entries[0].content, "ok");
+        assert_eq!(plan.entries[1].content, "also ok");
+    }
+}
