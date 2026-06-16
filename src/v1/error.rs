@@ -413,7 +413,10 @@ mod tests {
 
     #[test]
     fn error_code_debug_includes_numeric_value() {
-        assert_eq!(format!("{:?}", ErrorCode::ParseError), "-32700: Parse error");
+        assert_eq!(
+            format!("{:?}", ErrorCode::ParseError),
+            "-32700: Parse error"
+        );
         assert_eq!(
             format!("{:?}", ErrorCode::AuthRequired),
             "-32000: Authentication required"
