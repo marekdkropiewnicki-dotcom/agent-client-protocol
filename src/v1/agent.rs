@@ -6603,11 +6603,11 @@ mod test_serialization {
 
         let value = serde_json::to_value(&ext).unwrap();
         assert_eq!(value, json!({"foo": "bar"}));
+        let obj = value
+            .as_object()
+            .expect("ExtRequest serializes its params object directly");
         assert!(
-            value
-                .as_object()
-                .map(|obj| !obj.contains_key("method"))
-                .unwrap_or(true),
+            !obj.contains_key("method"),
             "method must not appear in serialized ExtRequest",
         );
     }
@@ -6622,11 +6622,11 @@ mod test_serialization {
 
         let value = serde_json::to_value(&ext).unwrap();
         assert_eq!(value, json!({"event": "ping"}));
+        let obj = value
+            .as_object()
+            .expect("ExtNotification serializes its params object directly");
         assert!(
-            value
-                .as_object()
-                .map(|obj| !obj.contains_key("method"))
-                .unwrap_or(true),
+            !obj.contains_key("method"),
             "method must not appear in serialized ExtNotification",
         );
     }
