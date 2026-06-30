@@ -5303,6 +5303,7 @@ impl CancelNotification {
 #[cfg(test)]
 mod test_serialization {
     use super::*;
+    use crate::TextContent;
     use serde_json::json;
 
     #[test]
@@ -6466,5 +6467,218 @@ mod test_serialization {
 
         let deserialized: AgentCapabilities = serde_json::from_value(json).unwrap();
         assert!(deserialized.providers.is_some());
+    }
+
+    // ----- Method-name routing coverage (stable variants) -----
+    //
+    // `ClientRequest::method()` and `AgentMethodNames` define the wire
+    // contract every SDK dispatcher relies on. A previous commit
+    // (`8659fc2`, "Rename provider method types to singular") shows how a
+    // simple rename can shift these strings; the tests below pin every
+    // stable variant to its documented wire name so any accidental change
+    // surfaces here instead of breaking clients in the wild.
+
+    #[test]
+    fn test_agent_method_name_constants_stable() {
+        assert_eq!(AGENT_METHOD_NAMES.initialize, "initialize");
+        assert_eq!(AGENT_METHOD_NAMES.authenticate, "authenticate");
+        assert_eq!(AGENT_METHOD_NAMES.logout, "logout");
+        assert_eq!(AGENT_METHOD_NAMES.session_new, "session/new");
+        assert_eq!(AGENT_METHOD_NAMES.session_load, "session/load");
+        assert_eq!(AGENT_METHOD_NAMES.session_list, "session/list");
+        assert_eq!(AGENT_METHOD_NAMES.session_resume, "session/resume");
+        assert_eq!(AGENT_METHOD_NAMES.session_close, "session/close");
+        assert_eq!(AGENT_METHOD_NAMES.session_set_mode, "session/set_mode");
+        assert_eq!(
+            AGENT_METHOD_NAMES.session_set_config_option,
+            "session/set_config_option"
+        );
+        assert_eq!(AGENT_METHOD_NAMES.session_prompt, "session/prompt");
+        assert_eq!(AGENT_METHOD_NAMES.session_cancel, "session/cancel");
+    }
+
+    #[test]
+    fn test_client_request_method_routing_for_stable_variants() {
+        assert_eq!(
+            ClientRequest::InitializeRequest(InitializeRequest::new(ProtocolVersion::V1)).method(),
+            "initialize",
+        );
+        assert_eq!(
+            ClientRequest::AuthenticateRequest(AuthenticateRequest::new("auth-method")).method(),
+            "authenticate",
+        );
+        assert_eq!(
+            ClientRequest::LogoutRequest(LogoutRequest::new()).method(),
+            "logout",
+        );
+        assert_eq!(
+            ClientRequest::NewSessionRequest(NewSessionRequest::new("/cwd")).method(),
+            "session/new",
+        );
+        assert_eq!(
+            ClientRequest::LoadSessionRequest(LoadSessionRequest::new("sess", "/cwd")).method(),
+            "session/load",
+        );
+        assert_eq!(
+            ClientRequest::ListSessionsRequest(ListSessionsRequest::new()).method(),
+            "session/list",
+        );
+        assert_eq!(
+            ClientRequest::ResumeSessionRequest(ResumeSessionRequest::new("sess", "/cwd"))
+                .method(),
+            "session/resume",
+        );
+        assert_eq!(
+            ClientRequest::CloseSessionRequest(CloseSessionRequest::new("sess")).method(),
+            "session/close",
+        );
+        assert_eq!(
+            ClientRequest::SetSessionModeRequest(SetSessionModeRequest::new("sess", "mode"))
+                .method(),
+            "session/set_mode",
+        );
+        assert_eq!(
+            ClientRequest::PromptRequest(PromptRequest::new(
+                "sess",
+                vec![ContentBlock::Text(TextContent::new("hi"))],
+            ))
+            .method(),
+            "session/prompt",
+        );
+    }
+
+    #[test]
+    fn test_client_notification_cancel_method_routing() {
+        assert_eq!(
+            ClientNotification::CancelNotification(CancelNotification::new("sess")).method(),
+            "session/cancel",
+        );
+    }
+
+    #[test]
+    fn test_client_request_ext_method_is_returned_verbatim() {
+        // Extension method names are user-supplied; the dispatcher must
+        // hand them back unchanged. If routing ever started normalizing
+        // or rewriting them, extension methods would silently break.
+        let params: std::sync::Arc<serde_json::value::RawValue> =
+            serde_json::value::RawValue::from_string("{}".to_string())
+                .unwrap()
+                .into();
+        let ext = ExtRequest::new("_custom/my_method", params);
+        assert_eq!(
+            ClientRequest::ExtMethodRequest(ext).method(),
+            "_custom/my_method",
+        );
+    }
+
+    #[test]
+    fn test_client_notification_ext_method_is_returned_verbatim() {
+        let params: std::sync::Arc<serde_json::value::RawValue> =
+            serde_json::value::RawValue::from_string("{}".to_string())
+                .unwrap()
+                .into();
+        let ext = ExtNotification::new("_custom/my_notification", params);
+        assert_eq!(
+            ClientNotification::ExtNotification(ext).method(),
+            "_custom/my_notification",
+        );
+    }
+
+    // ----- Extension wire-format invariants -----
+    //
+    // `ExtRequest` / `ExtNotification` mark `method` as `#[serde(skip)]`
+    // and use `#[serde(transparent)]` so the params become the entire
+    // wire payload. Both invariants are load-bearing: a regression that
+    // started serializing `method` would either double-wrap payloads or
+    // leak the routing key into the JSON-RPC `params` slot, breaking
+    // every extension in the ecosystem.
+
+    #[test]
+    fn test_ext_request_serialization_skips_method_and_is_transparent() {
+        let params: std::sync::Arc<serde_json::value::RawValue> =
+            serde_json::value::RawValue::from_string(r#"{"foo":"bar"}"#.to_string())
+                .unwrap()
+                .into();
+        let ext = ExtRequest::new("_custom/x", params);
+
+        let value = serde_json::to_value(&ext).unwrap();
+        assert_eq!(value, json!({"foo": "bar"}));
+        assert!(
+            value
+                .as_object()
+                .map(|obj| !obj.contains_key("method"))
+                .unwrap_or(true),
+            "method must not appear in serialized ExtRequest",
+        );
+    }
+
+    #[test]
+    fn test_ext_notification_serialization_skips_method_and_is_transparent() {
+        let params: std::sync::Arc<serde_json::value::RawValue> =
+            serde_json::value::RawValue::from_string(r#"{"event":"ping"}"#.to_string())
+                .unwrap()
+                .into();
+        let ext = ExtNotification::new("_custom/x", params);
+
+        let value = serde_json::to_value(&ext).unwrap();
+        assert_eq!(value, json!({"event": "ping"}));
+        assert!(
+            value
+                .as_object()
+                .map(|obj| !obj.contains_key("method"))
+                .unwrap_or(true),
+            "method must not appear in serialized ExtNotification",
+        );
+    }
+
+    #[test]
+    fn test_ext_response_is_transparent_newtype() {
+        let params: std::sync::Arc<serde_json::value::RawValue> =
+            serde_json::value::RawValue::from_string("[1,2,3]".to_string())
+                .unwrap()
+                .into();
+        let resp = ExtResponse::new(params);
+
+        let value = serde_json::to_value(&resp).unwrap();
+        assert_eq!(value, json!([1, 2, 3]));
+    }
+
+    // ----- Logout (stabilized in df33658 "feat: Stabilize logout method") -----
+    //
+    // The stable wire shape for logout is an empty object. Pin it so a
+    // future required field would surface as a test failure instead of
+    // a silently-rejected request from older clients.
+
+    #[test]
+    fn test_logout_request_empty_serialization() {
+        assert_eq!(
+            serde_json::to_value(LogoutRequest::new()).unwrap(),
+            json!({}),
+        );
+        let decoded: LogoutRequest = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(decoded, LogoutRequest::new());
+    }
+
+    #[test]
+    fn test_logout_response_empty_serialization() {
+        assert_eq!(
+            serde_json::to_value(LogoutResponse::new()).unwrap(),
+            json!({}),
+        );
+        let decoded: LogoutResponse = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(decoded, LogoutResponse::new());
+    }
+
+    #[test]
+    fn test_logout_request_meta_round_trip() {
+        let mut meta = serde_json::Map::new();
+        meta.insert("reason".to_string(), json!("session-end"));
+        let req = LogoutRequest::new().meta(meta.clone());
+
+        let value = serde_json::to_value(&req).unwrap();
+        assert_eq!(value, json!({"_meta": {"reason": "session-end"}}));
+
+        let decoded: LogoutRequest = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded, req);
     }
 }
