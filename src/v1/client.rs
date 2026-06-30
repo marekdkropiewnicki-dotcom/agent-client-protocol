@@ -2272,10 +2272,7 @@ mod tests {
             "session/request_permission",
         );
         assert_eq!(CLIENT_METHOD_NAMES.fs_read_text_file, "fs/read_text_file");
-        assert_eq!(
-            CLIENT_METHOD_NAMES.fs_write_text_file,
-            "fs/write_text_file",
-        );
+        assert_eq!(CLIENT_METHOD_NAMES.fs_write_text_file, "fs/write_text_file",);
         assert_eq!(CLIENT_METHOD_NAMES.terminal_create, "terminal/create");
         assert_eq!(CLIENT_METHOD_NAMES.terminal_output, "terminal/output");
         assert_eq!(CLIENT_METHOD_NAMES.terminal_release, "terminal/release");
@@ -2298,8 +2295,7 @@ mod tests {
             "fs/write_text_file",
         );
         assert_eq!(
-            AgentRequest::ReadTextFileRequest(ReadTextFileRequest::new(session, "/tmp/a"))
-                .method(),
+            AgentRequest::ReadTextFileRequest(ReadTextFileRequest::new(session, "/tmp/a")).method(),
             "fs/read_text_file",
         );
         assert_eq!(

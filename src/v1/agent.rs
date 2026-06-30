@@ -6524,8 +6524,7 @@ mod test_serialization {
             "session/list",
         );
         assert_eq!(
-            ClientRequest::ResumeSessionRequest(ResumeSessionRequest::new("sess", "/cwd"))
-                .method(),
+            ClientRequest::ResumeSessionRequest(ResumeSessionRequest::new("sess", "/cwd")).method(),
             "session/resume",
         );
         assert_eq!(

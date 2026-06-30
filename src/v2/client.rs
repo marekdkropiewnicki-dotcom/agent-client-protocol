@@ -2106,6 +2106,7 @@ impl AgentNotification {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::v2::{TextContent, ToolCallUpdateFields};
 
     #[test]
     fn test_serialization_behavior() {
@@ -2251,5 +2252,127 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(request_with_null_params.params, None);
+    }
+
+    // ----- Method-name routing coverage (stable variants) -----
+    //
+    // `AgentRequest::method()` and `AgentNotification::method()` are the
+    // dispatch keys every SDK uses to route incoming JSON-RPC messages
+    // to the right handler. Before this test only the (unstable)
+    // mcp-over-acp variants were covered; the stable filesystem,
+    // terminal, permission, and session-update paths were unpinned.
+    // Mirror of the equivalent v1 coverage.
+
+    #[test]
+    fn test_client_method_name_constants_stable() {
+        assert_eq!(CLIENT_METHOD_NAMES.session_update, "session/update");
+        assert_eq!(
+            CLIENT_METHOD_NAMES.session_request_permission,
+            "session/request_permission",
+        );
+        assert_eq!(CLIENT_METHOD_NAMES.fs_read_text_file, "fs/read_text_file");
+        assert_eq!(CLIENT_METHOD_NAMES.fs_write_text_file, "fs/write_text_file",);
+        assert_eq!(CLIENT_METHOD_NAMES.terminal_create, "terminal/create");
+        assert_eq!(CLIENT_METHOD_NAMES.terminal_output, "terminal/output");
+        assert_eq!(CLIENT_METHOD_NAMES.terminal_release, "terminal/release");
+        assert_eq!(
+            CLIENT_METHOD_NAMES.terminal_wait_for_exit,
+            "terminal/wait_for_exit",
+        );
+        assert_eq!(CLIENT_METHOD_NAMES.terminal_kill, "terminal/kill");
+    }
+
+    #[test]
+    fn test_agent_request_method_routing_for_stable_variants() {
+        let session = "sess";
+
+        assert_eq!(
+            AgentRequest::WriteTextFileRequest(WriteTextFileRequest::new(
+                session, "/tmp/a", "hello",
+            ))
+            .method(),
+            "fs/write_text_file",
+        );
+        assert_eq!(
+            AgentRequest::ReadTextFileRequest(ReadTextFileRequest::new(session, "/tmp/a")).method(),
+            "fs/read_text_file",
+        );
+        assert_eq!(
+            AgentRequest::RequestPermissionRequest(RequestPermissionRequest::new(
+                session,
+                ToolCallUpdate::new("tc", ToolCallUpdateFields::new()),
+                vec![PermissionOption::new(
+                    "opt",
+                    "Opt",
+                    PermissionOptionKind::AllowOnce,
+                )],
+            ))
+            .method(),
+            "session/request_permission",
+        );
+        assert_eq!(
+            AgentRequest::CreateTerminalRequest(CreateTerminalRequest::new(session, "echo hi"))
+                .method(),
+            "terminal/create",
+        );
+        assert_eq!(
+            AgentRequest::TerminalOutputRequest(TerminalOutputRequest::new(session, "term"))
+                .method(),
+            "terminal/output",
+        );
+        assert_eq!(
+            AgentRequest::ReleaseTerminalRequest(ReleaseTerminalRequest::new(session, "term"))
+                .method(),
+            "terminal/release",
+        );
+        assert_eq!(
+            AgentRequest::WaitForTerminalExitRequest(WaitForTerminalExitRequest::new(
+                session, "term",
+            ))
+            .method(),
+            "terminal/wait_for_exit",
+        );
+        assert_eq!(
+            AgentRequest::KillTerminalRequest(KillTerminalRequest::new(session, "term")).method(),
+            "terminal/kill",
+        );
+    }
+
+    #[test]
+    fn test_agent_notification_session_update_method_routing() {
+        let update = SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+            TextContent::new("hi"),
+        )));
+        assert_eq!(
+            AgentNotification::SessionNotification(SessionNotification::new("sess", update))
+                .method(),
+            "session/update",
+        );
+    }
+
+    #[test]
+    fn test_agent_request_ext_method_is_returned_verbatim() {
+        let params: std::sync::Arc<serde_json::value::RawValue> =
+            serde_json::value::RawValue::from_string("{}".to_string())
+                .unwrap()
+                .into();
+        let ext = ExtRequest::new("_custom/agent_method", params);
+        assert_eq!(
+            AgentRequest::ExtMethodRequest(ext).method(),
+            "_custom/agent_method",
+        );
+    }
+
+    #[test]
+    fn test_agent_notification_ext_method_is_returned_verbatim() {
+        let params: std::sync::Arc<serde_json::value::RawValue> =
+            serde_json::value::RawValue::from_string("{}".to_string())
+                .unwrap()
+                .into();
+        let ext = ExtNotification::new("_custom/agent_notify", params);
+        assert_eq!(
+            AgentNotification::ExtNotification(ext).method(),
+            "_custom/agent_notify",
+        );
     }
 }
