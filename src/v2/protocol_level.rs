@@ -121,3 +121,116 @@ impl ProtocolLevelNotification {
         }
     }
 }
+
+#[cfg(all(test, feature = "unstable_cancel_request"))]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn cancel_request_method_name_is_stable() {
+        // Pin the wire method name so downstream implementations that dispatch
+        // on this string do not silently break if the constant is renamed.
+        assert_eq!(CANCEL_REQUEST_METHOD_NAME, "$/cancel_request");
+        assert_eq!(
+            PROTOCOL_LEVEL_METHOD_NAMES.cancel_request,
+            CANCEL_REQUEST_METHOD_NAME,
+        );
+    }
+
+    #[test]
+    fn cancel_request_new_defaults_meta_to_none() {
+        let notification = CancelRequestNotification::new(RequestId::Number(42));
+        assert_eq!(notification.request_id, RequestId::Number(42));
+        assert!(notification.meta.is_none());
+    }
+
+    #[test]
+    fn cancel_request_meta_builder_accepts_option_and_value() {
+        let mut meta = serde_json::Map::new();
+        meta.insert("progress".to_string(), json!(0.5));
+
+        // IntoOption should accept a bare value and store it as Some.
+        let with_value = CancelRequestNotification::new(RequestId::Number(1)).meta(meta.clone());
+        assert_eq!(with_value.meta.as_ref(), Some(&meta));
+
+        // IntoOption should accept Some(value).
+        let with_some =
+            CancelRequestNotification::new(RequestId::Number(1)).meta(Some(meta.clone()));
+        assert_eq!(with_some.meta.as_ref(), Some(&meta));
+
+        // IntoOption should accept None to clear the field.
+        let cleared = CancelRequestNotification::new(RequestId::Number(1))
+            .meta(meta.clone())
+            .meta(Option::<Meta>::None);
+        assert!(cleared.meta.is_none());
+    }
+
+    #[test]
+    fn cancel_request_serializes_camel_case_and_skips_none_meta() {
+        // The `_meta` field must be renamed and skipped when None (via
+        // `skip_serializing_none`); the request id field must be camelCased.
+        let notification = CancelRequestNotification::new(RequestId::Number(7));
+        let value = serde_json::to_value(&notification).unwrap();
+        assert_eq!(value, json!({ "requestId": 7 }));
+        assert!(!value.as_object().unwrap().contains_key("_meta"));
+        assert!(!value.as_object().unwrap().contains_key("meta"));
+    }
+
+    #[test]
+    fn cancel_request_serializes_meta_under_underscore_meta() {
+        let mut meta = serde_json::Map::new();
+        meta.insert("reason".to_string(), json!("user cancelled"));
+        let notification = CancelRequestNotification::new(RequestId::Str("abc".into())).meta(meta);
+        let value = serde_json::to_value(&notification).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "requestId": "abc",
+                "_meta": { "reason": "user cancelled" }
+            })
+        );
+    }
+
+    #[test]
+    fn cancel_request_round_trips_all_request_id_variants() {
+        for id in [
+            RequestId::Number(-1),
+            RequestId::Number(0),
+            RequestId::Number(i64::MAX),
+            RequestId::Str("session-1".into()),
+            RequestId::Null,
+        ] {
+            let notification = CancelRequestNotification::new(id.clone());
+            let value = serde_json::to_value(&notification).unwrap();
+            let parsed: CancelRequestNotification = serde_json::from_value(value).unwrap();
+            assert_eq!(parsed, notification);
+            assert_eq!(parsed.request_id, id);
+        }
+    }
+
+    #[test]
+    fn protocol_level_notification_method_matches_constant() {
+        let inner = CancelRequestNotification::new(RequestId::Number(1));
+        let notification = ProtocolLevelNotification::CancelRequestNotification(inner);
+        assert_eq!(notification.method(), "$/cancel_request");
+        assert_eq!(
+            notification.method(),
+            PROTOCOL_LEVEL_METHOD_NAMES.cancel_request,
+        );
+    }
+
+    #[test]
+    fn protocol_level_notification_serializes_untagged_as_inner() {
+        // Because `ProtocolLevelNotification` is `#[serde(untagged)]`, the enum
+        // wrapper must be invisible on the wire — the params body is the inner
+        // `CancelRequestNotification` payload verbatim.
+        let inner = CancelRequestNotification::new(RequestId::Number(9));
+        let notification = ProtocolLevelNotification::CancelRequestNotification(inner.clone());
+
+        let outer = serde_json::to_value(&notification).unwrap();
+        let bare = serde_json::to_value(&inner).unwrap();
+        assert_eq!(outer, bare);
+        assert_eq!(outer, json!({ "requestId": 9 }));
+    }
+}
