@@ -586,4 +586,277 @@ mod tests {
         assert!(!json.as_object().unwrap().contains_key("annotations"));
         assert!(!json.as_object().unwrap().contains_key("meta"));
     }
+
+    #[test]
+    fn test_content_block_text_wire_shape() {
+        // Content blocks are #[serde(tag = "type", rename_all = "snake_case")]
+        // so the discriminator is a snake_case string. Downstream clients
+        // dispatch on this exact value.
+        let block = ContentBlock::Text(TextContent::new("hi"));
+        let value = serde_json::to_value(&block).unwrap();
+        assert_eq!(value["type"], "text");
+        assert_eq!(value["text"], "hi");
+
+        let round_trip: ContentBlock = serde_json::from_value(value).unwrap();
+        assert_eq!(round_trip, block);
+    }
+
+    #[test]
+    fn test_content_block_resource_link_wire_shape() {
+        let block = ContentBlock::ResourceLink(ResourceLink::new("readme", "file:///README.md"));
+        let value = serde_json::to_value(&block).unwrap();
+        assert_eq!(value["type"], "resource_link");
+        assert_eq!(value["name"], "readme");
+        assert_eq!(value["uri"], "file:///README.md");
+    }
+
+    #[test]
+    fn test_content_block_resource_wire_shape() {
+        let embedded = EmbeddedResource::new(EmbeddedResourceResource::TextResourceContents(
+            TextResourceContents::new("body", "file:///a.txt"),
+        ));
+        let block = ContentBlock::Resource(embedded);
+        let value = serde_json::to_value(&block).unwrap();
+        assert_eq!(value["type"], "resource");
+        assert_eq!(value["resource"]["text"], "body");
+        assert_eq!(value["resource"]["uri"], "file:///a.txt");
+    }
+
+    #[test]
+    fn test_role_wire_format_is_camel_case() {
+        assert_eq!(serde_json::to_value(&Role::Assistant).unwrap(), "assistant");
+        assert_eq!(serde_json::to_value(&Role::User).unwrap(), "user");
+        assert_eq!(
+            serde_json::from_value::<Role>(serde_json::json!("assistant")).unwrap(),
+            Role::Assistant,
+        );
+        assert_eq!(
+            serde_json::from_value::<Role>(serde_json::json!("user")).unwrap(),
+            Role::User,
+        );
+    }
+
+    #[test]
+    fn test_annotations_builder_and_wire_shape() {
+        let annotations = Annotations::new()
+            .audience(vec![Role::Assistant, Role::User])
+            .last_modified("2026-01-02T03:04:05Z")
+            .priority(0.75);
+
+        let value = serde_json::to_value(&annotations).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "audience": ["assistant", "user"],
+                "lastModified": "2026-01-02T03:04:05Z",
+                "priority": 0.75
+            })
+        );
+
+        // Round-trip
+        let parsed: Annotations = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, annotations);
+    }
+
+    #[test]
+    fn test_annotations_omits_none_fields() {
+        let annotations = Annotations::new();
+        let value = serde_json::to_value(&annotations).unwrap();
+        let obj = value.as_object().unwrap();
+        assert!(!obj.contains_key("audience"));
+        assert!(!obj.contains_key("lastModified"));
+        assert!(!obj.contains_key("priority"));
+        assert!(!obj.contains_key("_meta"));
+    }
+
+    #[test]
+    fn test_annotations_audience_skips_unknown_role_variants() {
+        // `audience` uses VecSkipError so a future/unknown role entry must be
+        // silently dropped instead of failing the whole payload. This is the
+        // documented forward-compat contract; regressing it would break older
+        // clients when new roles are added.
+        let raw = serde_json::json!({
+            "audience": ["user", "future_role", "assistant"]
+        });
+        let parsed: Annotations = serde_json::from_value(raw).unwrap();
+        assert_eq!(
+            parsed.audience.as_deref(),
+            Some(&[Role::User, Role::Assistant][..])
+        );
+    }
+
+    #[test]
+    fn test_annotations_field_falls_back_to_default_on_bad_type() {
+        // The parent `annotations` field on content types uses `DefaultOnError`,
+        // so a garbage annotations value must degrade to None rather than
+        // rejecting the whole content block. Locking this in prevents future
+        // strictness regressions from breaking forward compatibility.
+        let raw = serde_json::json!({
+            "text": "hi",
+            "annotations": 42
+        });
+        let parsed: TextContent = serde_json::from_value(raw).unwrap();
+        assert_eq!(parsed.text, "hi");
+        assert!(parsed.annotations.is_none());
+    }
+
+    #[test]
+    fn test_annotations_priority_supports_f64_edges() {
+        // priority is `Option<f64>` — sanity-check that it survives round-trip
+        // for the documented [0.0, 1.0] range that MCP uses.
+        for p in [0.0_f64, 0.25, 0.5, 1.0] {
+            let annotations = Annotations::new().priority(p);
+            let value = serde_json::to_value(&annotations).unwrap();
+            let parsed: Annotations = serde_json::from_value(value).unwrap();
+            assert_eq!(parsed.priority, Some(p));
+        }
+    }
+
+    #[test]
+    fn test_resource_link_builder_full_wire_shape() {
+        let link = ResourceLink::new("logo", "https://example.com/logo.png")
+            .description("Brand mark")
+            .mime_type("image/png")
+            .size(1024)
+            .title("Logo");
+
+        let value = serde_json::to_value(&link).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "name": "logo",
+                "uri": "https://example.com/logo.png",
+                "description": "Brand mark",
+                "mimeType": "image/png",
+                "size": 1024,
+                "title": "Logo"
+            })
+        );
+        assert!(!value.as_object().unwrap().contains_key("_meta"));
+
+        let parsed: ResourceLink = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, link);
+    }
+
+    #[test]
+    fn test_resource_link_omits_optional_fields() {
+        let link = ResourceLink::new("n", "file:///x");
+        let value = serde_json::to_value(&link).unwrap();
+        let obj = value.as_object().unwrap();
+        for key in [
+            "description",
+            "mimeType",
+            "size",
+            "title",
+            "_meta",
+            "annotations",
+        ] {
+            assert!(!obj.contains_key(key), "unexpected key: {key}");
+        }
+    }
+
+    #[test]
+    fn test_text_resource_contents_builder_and_wire_shape() {
+        let contents = TextResourceContents::new("hello", "file:///a.txt").mime_type("text/plain");
+        let value = serde_json::to_value(&contents).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "text": "hello",
+                "uri": "file:///a.txt",
+                "mimeType": "text/plain"
+            })
+        );
+
+        // Round-trip
+        let parsed: TextResourceContents = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, contents);
+    }
+
+    #[test]
+    fn test_blob_resource_contents_builder_and_wire_shape() {
+        let contents = BlobResourceContents::new("YmxvYg==", "file:///b.bin")
+            .mime_type("application/octet-stream");
+        let value = serde_json::to_value(&contents).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "blob": "YmxvYg==",
+                "uri": "file:///b.bin",
+                "mimeType": "application/octet-stream"
+            })
+        );
+
+        let parsed: BlobResourceContents = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, contents);
+    }
+
+    #[test]
+    fn test_embedded_resource_untagged_dispatches_on_shape() {
+        // `EmbeddedResourceResource` is #[serde(untagged)]. The variant is
+        // chosen purely by which required field ("text" or "blob") is present.
+        // If either arm ever loses/renames its required field, this test
+        // catches the ambiguity before it ships.
+        let text_json = serde_json::json!({
+            "text": "hi",
+            "uri": "file:///a.txt"
+        });
+        match serde_json::from_value::<EmbeddedResourceResource>(text_json).unwrap() {
+            EmbeddedResourceResource::TextResourceContents(t) => {
+                assert_eq!(t.text, "hi");
+                assert_eq!(t.uri, "file:///a.txt");
+            }
+            EmbeddedResourceResource::BlobResourceContents(_) => {
+                panic!("untagged deserialize picked wrong variant")
+            }
+        }
+
+        let blob_json = serde_json::json!({
+            "blob": "YmxvYg==",
+            "uri": "file:///b.bin"
+        });
+        match serde_json::from_value::<EmbeddedResourceResource>(blob_json).unwrap() {
+            EmbeddedResourceResource::BlobResourceContents(b) => {
+                assert_eq!(b.blob, "YmxvYg==");
+                assert_eq!(b.uri, "file:///b.bin");
+            }
+            EmbeddedResourceResource::TextResourceContents(_) => {
+                panic!("untagged deserialize picked wrong variant")
+            }
+        }
+    }
+
+    #[test]
+    fn test_embedded_resource_round_trip_text_variant() {
+        let resource = EmbeddedResource::new(EmbeddedResourceResource::TextResourceContents(
+            TextResourceContents::new("body", "file:///a.txt").mime_type("text/plain"),
+        ));
+
+        let value = serde_json::to_value(&resource).unwrap();
+        assert_eq!(value["resource"]["text"], "body");
+        assert_eq!(value["resource"]["uri"], "file:///a.txt");
+        assert_eq!(value["resource"]["mimeType"], "text/plain");
+
+        let parsed: EmbeddedResource = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, resource);
+    }
+
+    #[test]
+    fn test_embedded_resource_round_trip_blob_variant() {
+        let resource = EmbeddedResource::new(EmbeddedResourceResource::BlobResourceContents(
+            BlobResourceContents::new("YmxvYg==", "file:///b.bin"),
+        ));
+        let value = serde_json::to_value(&resource).unwrap();
+        assert_eq!(value["resource"]["blob"], "YmxvYg==");
+        assert_eq!(value["resource"]["uri"], "file:///b.bin");
+        assert!(
+            !value["resource"]
+                .as_object()
+                .unwrap()
+                .contains_key("mimeType")
+        );
+
+        let parsed: EmbeddedResource = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, resource);
+    }
 }
