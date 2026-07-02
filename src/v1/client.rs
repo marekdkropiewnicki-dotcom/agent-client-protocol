@@ -2252,4 +2252,241 @@ mod tests {
         .unwrap();
         assert_eq!(request_with_null_params.params, None);
     }
+
+    // ---- SessionUpdate discriminator wire format ---------------------------
+    //
+    // `SessionUpdate` is the internally-tagged enum used by every
+    // `session/update` streaming notification (see
+    // `AgentNotification::SessionNotification`). The `sessionUpdate` tag +
+    // snake_case variant labels are the sole discriminator every SDK routes
+    // on: renaming a variant or its label silently breaks every conforming
+    // client. Only `AgentMessageChunk` was previously exercised (via the
+    // `notification_wire_format` test in `rpc.rs`), leaving nine other stable
+    // variants unpinned. The following tests lock the exact wire label for
+    // every stable variant and confirm round-trip stability.
+
+    #[test]
+    fn session_update_variant_discriminators_snake_case() {
+        use crate::{
+            ContentBlock, PlanEntry, PlanEntryPriority, PlanEntryStatus, TextContent,
+            ToolCallUpdateFields,
+        };
+        use serde_json::Value;
+
+        // Build a minimal ContentChunk for the three *_message_chunk / thought
+        // variants that wrap a ContentChunk.
+        let chunk = || ContentChunk::new(ContentBlock::Text(TextContent::new("hi")));
+
+        // Each pair pins a stable variant to its exact snake_case wire label.
+        // If the derive macro ever drops `rename_all = "snake_case"` or if a
+        // variant name changes, one of these will fail before the wire format
+        // ships.
+        let cases: Vec<(SessionUpdate, &str)> = vec![
+            (
+                SessionUpdate::UserMessageChunk(chunk()),
+                "user_message_chunk",
+            ),
+            (
+                SessionUpdate::AgentMessageChunk(chunk()),
+                "agent_message_chunk",
+            ),
+            (
+                SessionUpdate::AgentThoughtChunk(chunk()),
+                "agent_thought_chunk",
+            ),
+            (
+                SessionUpdate::ToolCall(ToolCall::new("tc-1", "read foo.rs")),
+                "tool_call",
+            ),
+            (
+                SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                    "tc-1",
+                    ToolCallUpdateFields::new().title("read foo.rs"),
+                )),
+                "tool_call_update",
+            ),
+            (
+                SessionUpdate::Plan(Plan::new(vec![PlanEntry::new(
+                    "do the thing",
+                    PlanEntryPriority::High,
+                    PlanEntryStatus::Pending,
+                )])),
+                "plan",
+            ),
+            (
+                SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![
+                    AvailableCommand::new("plan", "Create a plan"),
+                ])),
+                "available_commands_update",
+            ),
+            (
+                SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new("focused")),
+                "current_mode_update",
+            ),
+            (
+                SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(Vec::new())),
+                "config_option_update",
+            ),
+            (
+                SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().title("Untitled")),
+                "session_info_update",
+            ),
+        ];
+
+        for (update, expected_label) in cases {
+            let value = serde_json::to_value(&update).unwrap();
+
+            let obj = value
+                .as_object()
+                .expect("SessionUpdate variants must serialize as JSON objects");
+
+            assert_eq!(
+                obj.get("sessionUpdate"),
+                Some(&Value::String(expected_label.to_owned())),
+                "wrong or missing `sessionUpdate` tag for {update:?}",
+            );
+
+            let round_tripped: SessionUpdate = serde_json::from_value(value.clone())
+                .unwrap_or_else(|e| panic!("round-trip failed for {expected_label}: {e}"));
+
+            assert_eq!(
+                round_tripped, update,
+                "round-trip mismatch for {expected_label}"
+            );
+        }
+    }
+
+    #[test]
+    fn session_update_rejects_unknown_variant() {
+        use serde_json::json;
+
+        // `#[serde(tag = "sessionUpdate")]` on a `#[non_exhaustive]` enum is
+        // *strict* about unknown tag values: an unknown discriminator MUST
+        // fail rather than silently deserialize to some default. Otherwise a
+        // future ACP variant introduced by a newer agent could be routed to
+        // the wrong handler on an older client.
+        let err = serde_json::from_value::<SessionUpdate>(json!({
+            "sessionUpdate": "unknown_variant_from_the_future",
+            "content": { "type": "text", "text": "hi" }
+        }))
+        .unwrap_err();
+
+        // Guardrail: the error must actually mention the discriminator so
+        // upstream logs are useful when a mismatch happens in production.
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown_variant_from_the_future")
+                || msg.contains("sessionUpdate")
+                || msg.contains("variant"),
+            "expected the deserialize error to reference the unknown \
+             discriminator; got: {msg}",
+        );
+
+        // Missing tag entirely is also rejected — the enum has no default
+        // variant and untagged fallback would silently corrupt routing.
+        assert!(
+            serde_json::from_value::<SessionUpdate>(json!({
+                "content": { "type": "text", "text": "hi" }
+            }))
+            .is_err(),
+        );
+    }
+
+    // ---- AvailableCommandInput dispatch + AvailableCommand resilience -----
+    //
+    // `AvailableCommandInput` is an `#[serde(untagged)]` enum that is the
+    // *only* attached input shape a command may currently declare
+    // (Unstructured). The `AvailableCommand.input` field wraps it in
+    // `Option<_>` behind `#[serde_as(deserialize_as = "DefaultOnError")]`,
+    // which is the fallback mechanism that keeps older clients from crashing
+    // when a newer agent declares an input shape they don't yet know.
+    // These tests lock:
+    //   1. Untagged dispatch to the Unstructured variant purely by shape.
+    //   2. The DefaultOnError fallback on `AvailableCommand.input` — the
+    //      whole command must survive an unknown input, with input=None.
+    //   3. VecSkipError on `AvailableCommandsUpdate.available_commands` —
+    //      a malformed command entry is dropped, others kept.
+
+    #[test]
+    fn available_command_input_deserializes_untagged_and_omits_type_tag() {
+        use serde_json::{Value, json};
+
+        // Serialized form must NOT include a discriminator tag — this is an
+        // `#[serde(untagged)]` enum, so callers must distinguish variants by
+        // shape alone.
+        let cmd = AvailableCommand::new("plan", "Create a plan").input(
+            AvailableCommandInput::Unstructured(UnstructuredCommandInput::new("what to plan")),
+        );
+
+        let value = serde_json::to_value(&cmd).unwrap();
+        let input = value
+            .get("input")
+            .and_then(Value::as_object)
+            .expect("command.input must be a JSON object");
+
+        assert!(
+            !input.contains_key("type"),
+            "AvailableCommandInput is #[serde(untagged)] — no `type` \
+             discriminator should be emitted; got: {input:?}"
+        );
+        assert_eq!(input.get("hint"), Some(&json!("what to plan")));
+
+        // Round-trip must preserve the Unstructured variant.
+        let round_tripped: AvailableCommand = serde_json::from_value(value).unwrap();
+        assert_eq!(round_tripped, cmd);
+    }
+
+    #[test]
+    fn available_command_falls_back_to_none_input_on_unknown_shape() {
+        use serde_json::json;
+
+        // A future agent might attach a structured input shape that this
+        // client doesn't understand. `DefaultOnError` on
+        // `AvailableCommand.input` must swallow the error so the whole
+        // `AvailableCommand` still deserializes (with `input = None`) —
+        // otherwise a single unknown-shaped input would poison the entire
+        // `available_commands_update` payload.
+        let cmd: AvailableCommand = serde_json::from_value(json!({
+            "name": "plan",
+            "description": "Create a plan",
+            "input": { "somethingBrandNew": 42 }
+        }))
+        .unwrap();
+
+        assert_eq!(cmd.name, "plan");
+        assert_eq!(cmd.description, "Create a plan");
+        assert_eq!(cmd.input, None);
+
+        // Explicit `null` still round-trips as `None`.
+        let cmd_null: AvailableCommand = serde_json::from_value(json!({
+            "name": "plan",
+            "description": "Create a plan",
+            "input": null,
+        }))
+        .unwrap();
+        assert_eq!(cmd_null.input, None);
+    }
+
+    #[test]
+    fn available_commands_update_skips_malformed_entries() {
+        use serde_json::json;
+
+        // `VecSkipError` on the `available_commands` field means individual
+        // malformed entries must be dropped rather than failing the whole
+        // update. This is what keeps a session update usable when a newer
+        // agent sends a not-yet-understood entry.
+        let update: AvailableCommandsUpdate = serde_json::from_value(json!({
+            "availableCommands": [
+                { "name": "plan", "description": "Create a plan" },
+                { "name": 42, "description": "wrong type — should be dropped" },
+                "totally the wrong shape",
+                { "name": "research", "description": "Research the codebase" }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(update.available_commands.len(), 2);
+        assert_eq!(update.available_commands[0].name, "plan");
+        assert_eq!(update.available_commands[1].name, "research");
+    }
 }
