@@ -6481,11 +6481,13 @@ mod test_serialization {
 
     #[test]
     fn test_logout_request_wire_format() {
-        assert_eq!(serde_json::to_value(LogoutRequest::new()).unwrap(), json!({}));
+        assert_eq!(
+            serde_json::to_value(LogoutRequest::new()).unwrap(),
+            json!({})
+        );
 
         let with_meta_json = serde_json::to_value(
-            LogoutRequest::new()
-                .meta(Meta::from_iter([("k".to_string(), json!("v"))])),
+            LogoutRequest::new().meta(Meta::from_iter([("k".to_string(), json!("v"))])),
         )
         .unwrap();
         assert_eq!(with_meta_json, json!({ "_meta": { "k": "v" } }));
@@ -6498,8 +6500,7 @@ mod test_serialization {
         );
 
         // Forward-compat: extra keys are ignored.
-        let extra: LogoutRequest =
-            serde_json::from_value(json!({ "unknownField": true })).unwrap();
+        let extra: LogoutRequest = serde_json::from_value(json!({ "unknownField": true })).unwrap();
         assert_eq!(extra, LogoutRequest::new());
     }
 
@@ -6516,8 +6517,8 @@ mod test_serialization {
         let empty: LogoutResponse = serde_json::from_value(json!({})).unwrap();
         assert_eq!(empty, LogoutResponse::new());
 
-        let with_meta = LogoutResponse::new()
-            .meta(Meta::from_iter([("trace".to_string(), json!("id"))]));
+        let with_meta =
+            LogoutResponse::new().meta(Meta::from_iter([("trace".to_string(), json!("id"))]));
         let json_value = serde_json::to_value(&with_meta).unwrap();
         assert_eq!(json_value, json!({ "_meta": { "trace": "id" } }));
     }
@@ -6544,8 +6545,7 @@ mod test_serialization {
         assert!(caps.meta.is_none());
 
         // `{}` is the canonical way to advertise logout support.
-        let caps: AgentAuthCapabilities =
-            serde_json::from_value(json!({ "logout": {} })).unwrap();
+        let caps: AgentAuthCapabilities = serde_json::from_value(json!({ "logout": {} })).unwrap();
         assert_eq!(caps.logout, Some(LogoutCapabilities::new()));
     }
 

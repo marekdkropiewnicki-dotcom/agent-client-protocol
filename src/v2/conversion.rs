@@ -9521,22 +9521,20 @@ mod tests {
 
     #[test]
     fn round_trips_logout_request() {
-        let request = v1::LogoutRequest::new()
-            .meta(v1::Meta::from_iter([(
-                "trace".to_string(),
-                serde_json::json!("id-1"),
-            )]));
+        let request = v1::LogoutRequest::new().meta(v1::Meta::from_iter([(
+            "trace".to_string(),
+            serde_json::json!("id-1"),
+        )]));
         assert_v1_round_trip::<v1::LogoutRequest, v2::LogoutRequest>(request.clone());
         assert_json_eq_after_v1_to_v2::<v1::LogoutRequest, v2::LogoutRequest>(request);
     }
 
     #[test]
     fn round_trips_logout_response() {
-        let response = v1::LogoutResponse::new()
-            .meta(v1::Meta::from_iter([(
-                "duration_ms".to_string(),
-                serde_json::json!(42),
-            )]));
+        let response = v1::LogoutResponse::new().meta(v1::Meta::from_iter([(
+            "duration_ms".to_string(),
+            serde_json::json!(42),
+        )]));
         assert_v1_round_trip::<v1::LogoutResponse, v2::LogoutResponse>(response.clone());
         assert_json_eq_after_v1_to_v2::<v1::LogoutResponse, v2::LogoutResponse>(response);
     }
@@ -9558,8 +9556,7 @@ mod tests {
     #[test]
     fn round_trips_agent_auth_capabilities() {
         // With logout advertised.
-        let advertised =
-            v1::AgentAuthCapabilities::new().logout(v1::LogoutCapabilities::new());
+        let advertised = v1::AgentAuthCapabilities::new().logout(v1::LogoutCapabilities::new());
         assert_v1_round_trip::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
             advertised.clone(),
         );
@@ -9572,9 +9569,7 @@ mod tests {
         // survive the round trip so that agents advertising nothing don't get
         // inadvertent capability upgrades on the other side of the conversion.
         let empty = v1::AgentAuthCapabilities::new();
-        assert_v1_round_trip::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
-            empty.clone(),
-        );
+        assert_v1_round_trip::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(empty.clone());
         assert_json_eq_after_v1_to_v2::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
             empty,
         );
