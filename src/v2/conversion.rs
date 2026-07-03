@@ -9513,4 +9513,65 @@ mod tests {
             ))
         );
     }
+
+    // Round-trip coverage for the newly-stabilized logout types (PR #1273).
+    // These conversion impls were only added in the same PR that stabilized
+    // logout, so this closes a coverage gap on high-blast-radius code that
+    // every ACP client relying on both v1 and v2 will hit.
+
+    #[test]
+    fn round_trips_logout_request() {
+        let request = v1::LogoutRequest::new().meta(v1::Meta::from_iter([(
+            "trace".to_string(),
+            serde_json::json!("id-1"),
+        )]));
+        assert_v1_round_trip::<v1::LogoutRequest, v2::LogoutRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LogoutRequest, v2::LogoutRequest>(request);
+    }
+
+    #[test]
+    fn round_trips_logout_response() {
+        let response = v1::LogoutResponse::new().meta(v1::Meta::from_iter([(
+            "duration_ms".to_string(),
+            serde_json::json!(42),
+        )]));
+        assert_v1_round_trip::<v1::LogoutResponse, v2::LogoutResponse>(response.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LogoutResponse, v2::LogoutResponse>(response);
+    }
+
+    #[test]
+    fn round_trips_logout_capabilities() {
+        let capabilities = v1::LogoutCapabilities::new().meta(v1::Meta::from_iter([(
+            "ext".to_string(),
+            serde_json::json!({ "vendor": "acp" }),
+        )]));
+        assert_v1_round_trip::<v1::LogoutCapabilities, v2::LogoutCapabilities>(
+            capabilities.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::LogoutCapabilities, v2::LogoutCapabilities>(
+            capabilities,
+        );
+    }
+
+    #[test]
+    fn round_trips_agent_auth_capabilities() {
+        // With logout advertised.
+        let advertised = v1::AgentAuthCapabilities::new().logout(v1::LogoutCapabilities::new());
+        assert_v1_round_trip::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
+            advertised.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
+            advertised,
+        );
+
+        // Empty (no logout support advertised) — this is the default a v1 or
+        // v2 agent will send when it does not implement logout. It must also
+        // survive the round trip so that agents advertising nothing don't get
+        // inadvertent capability upgrades on the other side of the conversion.
+        let empty = v1::AgentAuthCapabilities::new();
+        assert_v1_round_trip::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(empty.clone());
+        assert_json_eq_after_v1_to_v2::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
+            empty,
+        );
+    }
 }

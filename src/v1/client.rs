@@ -2106,6 +2106,7 @@ impl AgentNotification {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ToolCallUpdateFields;
 
     #[test]
     fn test_serialization_behavior() {
@@ -2251,5 +2252,171 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(request_with_null_params.params, None);
+    }
+
+    // Coverage for stable client method-name constants and JSON-RPC dispatch.
+    //
+    // Every `AgentRequest` and `AgentNotification` variant must route to a
+    // stable, spec-defined wire method name. If the match arms in
+    // `AgentRequest::method()` / `AgentNotification::method()` are ever
+    // reordered, or if any of the pub(crate) `*_METHOD_NAME` constants are
+    // renamed, every ACP client using this crate silently breaks the
+    // JSON-RPC contract with agents. These tests pin both surfaces.
+
+    #[test]
+    fn test_client_method_names_stable_constants() {
+        // Pin every stable method-name string. Renames MUST be caught here.
+        assert_eq!(SESSION_UPDATE_NOTIFICATION, "session/update");
+        assert_eq!(
+            SESSION_REQUEST_PERMISSION_METHOD_NAME,
+            "session/request_permission"
+        );
+        assert_eq!(FS_WRITE_TEXT_FILE_METHOD_NAME, "fs/write_text_file");
+        assert_eq!(FS_READ_TEXT_FILE_METHOD_NAME, "fs/read_text_file");
+        assert_eq!(TERMINAL_CREATE_METHOD_NAME, "terminal/create");
+        assert_eq!(TERMINAL_OUTPUT_METHOD_NAME, "terminal/output");
+        assert_eq!(TERMINAL_RELEASE_METHOD_NAME, "terminal/release");
+        assert_eq!(TERMINAL_WAIT_FOR_EXIT_METHOD_NAME, "terminal/wait_for_exit");
+        assert_eq!(TERMINAL_KILL_METHOD_NAME, "terminal/kill");
+
+        // Pin the mirror struct too so `CLIENT_METHOD_NAMES` cannot drift
+        // from the underlying constants.
+        assert_eq!(CLIENT_METHOD_NAMES.session_update, "session/update");
+        assert_eq!(
+            CLIENT_METHOD_NAMES.session_request_permission,
+            "session/request_permission"
+        );
+        assert_eq!(CLIENT_METHOD_NAMES.fs_write_text_file, "fs/write_text_file");
+        assert_eq!(CLIENT_METHOD_NAMES.fs_read_text_file, "fs/read_text_file");
+        assert_eq!(CLIENT_METHOD_NAMES.terminal_create, "terminal/create");
+        assert_eq!(CLIENT_METHOD_NAMES.terminal_output, "terminal/output");
+        assert_eq!(CLIENT_METHOD_NAMES.terminal_release, "terminal/release");
+        assert_eq!(
+            CLIENT_METHOD_NAMES.terminal_wait_for_exit,
+            "terminal/wait_for_exit"
+        );
+        assert_eq!(CLIENT_METHOD_NAMES.terminal_kill, "terminal/kill");
+    }
+
+    #[test]
+    fn test_agent_request_stable_method_routing() {
+        // Every stable variant of `AgentRequest` MUST route through
+        // `CLIENT_METHOD_NAMES.<field>` to its expected wire method name.
+        // Guards against accidental reordering of the match arms in
+        // `AgentRequest::method()`.
+        let cases: Vec<(AgentRequest, &str)> = vec![
+            (
+                AgentRequest::WriteTextFileRequest(WriteTextFileRequest::new(
+                    "sess",
+                    "/tmp/a.txt",
+                    "hi",
+                )),
+                "fs/write_text_file",
+            ),
+            (
+                AgentRequest::ReadTextFileRequest(ReadTextFileRequest::new("sess", "/tmp/a.txt")),
+                "fs/read_text_file",
+            ),
+            (
+                AgentRequest::RequestPermissionRequest(RequestPermissionRequest::new(
+                    "sess",
+                    ToolCallUpdate::new("tc_1", ToolCallUpdateFields::default()),
+                    vec![],
+                )),
+                "session/request_permission",
+            ),
+            (
+                AgentRequest::CreateTerminalRequest(CreateTerminalRequest::new("sess", "ls")),
+                "terminal/create",
+            ),
+            (
+                AgentRequest::TerminalOutputRequest(TerminalOutputRequest::new("sess", "term_1")),
+                "terminal/output",
+            ),
+            (
+                AgentRequest::ReleaseTerminalRequest(ReleaseTerminalRequest::new("sess", "term_1")),
+                "terminal/release",
+            ),
+            (
+                AgentRequest::WaitForTerminalExitRequest(WaitForTerminalExitRequest::new(
+                    "sess", "term_1",
+                )),
+                "terminal/wait_for_exit",
+            ),
+            (
+                AgentRequest::KillTerminalRequest(KillTerminalRequest::new("sess", "term_1")),
+                "terminal/kill",
+            ),
+        ];
+
+        for (request, expected) in cases {
+            assert_eq!(
+                request.method(),
+                expected,
+                "AgentRequest {request:?} routed to the wrong wire method"
+            );
+        }
+    }
+
+    #[test]
+    fn test_agent_request_ext_method_pulls_from_ext_request() {
+        // For extension methods, `.method()` MUST return the runtime `method`
+        // field of the `ExtRequest`, not a hard-coded constant. Otherwise
+        // custom extension routing collapses into a single method name.
+        let raw = serde_json::value::to_raw_value(&serde_json::json!({ "k": "v" })).unwrap();
+        let ext = ExtRequest::new("_vendor/custom", Arc::from(raw));
+        let request = AgentRequest::ExtMethodRequest(ext);
+        assert_eq!(request.method(), "_vendor/custom");
+    }
+
+    #[test]
+    fn test_agent_notification_stable_method_routing() {
+        // `SessionNotification` MUST route to the `session/update`
+        // notification name; misrouting silently drops every stream update
+        // clients rely on for rendering.
+        let session_notification =
+            AgentNotification::SessionNotification(SessionNotification::new(
+                "sess_1",
+                SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                    crate::TextContent::new("hi"),
+                ))),
+            ));
+        assert_eq!(session_notification.method(), "session/update");
+        assert_eq!(
+            session_notification.method(),
+            CLIENT_METHOD_NAMES.session_update
+        );
+
+        // Extension notifications carry their own method name.
+        let raw = serde_json::value::to_raw_value(&serde_json::json!({ "progress": 42 })).unwrap();
+        let ext = ExtNotification::new("_vendor/progress", Arc::from(raw));
+        let ext_notification = AgentNotification::ExtNotification(ext);
+        assert_eq!(ext_notification.method(), "_vendor/progress");
+    }
+
+    #[test]
+    fn test_agent_request_untagged_deserialization_selects_expected_variant() {
+        use serde_json::json;
+
+        // `AgentRequest` is `#[serde(untagged)]`, so the untagged enum
+        // matcher picks a variant purely by shape. Pin a couple of concrete
+        // shapes so that any change that makes two variants shape-identical
+        // (silently rerouting one to another) fails loudly here.
+        let read: AgentRequest = serde_json::from_value(json!({
+            "sessionId": "sess_1",
+            "path": "/tmp/a.txt"
+        }))
+        .unwrap();
+        assert!(matches!(read, AgentRequest::ReadTextFileRequest(_)));
+        assert_eq!(read.method(), "fs/read_text_file");
+
+        let write: AgentRequest = serde_json::from_value(json!({
+            "sessionId": "sess_1",
+            "path": "/tmp/a.txt",
+            "content": "hello"
+        }))
+        .unwrap();
+        assert!(matches!(write, AgentRequest::WriteTextFileRequest(_)));
+        assert_eq!(write.method(), "fs/write_text_file");
     }
 }
