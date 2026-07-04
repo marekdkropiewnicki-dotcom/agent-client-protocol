@@ -370,4 +370,74 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn resource_not_found_attaches_uri_when_provided() {
+        let err = Error::resource_not_found(Some("file:///missing.txt".into()));
+        assert_eq!(err.code, ErrorCode::ResourceNotFound);
+        assert_eq!(
+            err.data.as_ref().and_then(|v| v.get("uri")),
+            Some(&serde_json::json!("file:///missing.txt"))
+        );
+    }
+
+    #[test]
+    fn resource_not_found_omits_data_when_no_uri() {
+        let err = Error::resource_not_found(None);
+        assert_eq!(err.code, ErrorCode::ResourceNotFound);
+        assert!(err.data.is_none());
+    }
+
+    #[test]
+    fn into_internal_error_captures_source_message() {
+        let source = std::io::Error::other("disk gone");
+        let err = Error::into_internal_error(source);
+        assert_eq!(err.code, ErrorCode::InternalError);
+        assert_eq!(err.data, Some(serde_json::json!("disk gone")));
+    }
+
+    #[test]
+    fn display_uses_message_when_present() {
+        let err = Error::new(-32700, "boom");
+        assert_eq!(err.to_string(), "boom");
+    }
+
+    #[test]
+    fn display_falls_back_to_code_when_message_empty() {
+        let err = Error::new(-32700, "");
+        assert_eq!(err.to_string(), "-32700");
+    }
+
+    #[test]
+    fn display_appends_pretty_printed_data() {
+        let err = Error::new(-32603, "boom").data(serde_json::json!({ "why": "unknown" }));
+        let text = err.to_string();
+        assert!(text.starts_with("boom: "));
+        assert!(text.contains("\"why\": \"unknown\""));
+    }
+
+    #[test]
+    fn from_serde_json_error_maps_to_invalid_params_with_context() {
+        let json_err = serde_json::from_str::<serde_json::Value>("{ not json").unwrap_err();
+        let expected_message = json_err.to_string();
+        let err: Error = json_err.into();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        assert_eq!(err.data, Some(serde_json::json!(expected_message)));
+    }
+
+    #[test]
+    fn from_anyhow_error_downcasts_to_existing_acp_error() {
+        let original = Error::auth_required().data(serde_json::json!({ "hint": "login" }));
+        let wrapped: anyhow::Error = anyhow::Error::new(original.clone());
+        let restored: Error = wrapped.into();
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn from_anyhow_error_wraps_other_errors_as_internal() {
+        let wrapped = anyhow::anyhow!("something exploded");
+        let err: Error = wrapped.into();
+        assert_eq!(err.code, ErrorCode::InternalError);
+        assert_eq!(err.data, Some(serde_json::json!("something exploded")));
+    }
 }

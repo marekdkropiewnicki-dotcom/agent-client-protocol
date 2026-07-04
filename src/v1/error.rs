@@ -370,4 +370,92 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn resource_not_found_attaches_uri_when_provided() {
+        // Callers frequently forward this URI to end users; make sure it
+        // survives into `data` under the documented key.
+        let err = Error::resource_not_found(Some("file:///missing.txt".into()));
+        assert_eq!(err.code, ErrorCode::ResourceNotFound);
+        assert_eq!(
+            err.data.as_ref().and_then(|v| v.get("uri")),
+            Some(&serde_json::json!("file:///missing.txt"))
+        );
+    }
+
+    #[test]
+    fn resource_not_found_omits_data_when_no_uri() {
+        // No URI means no `data` block — the "URI missing" case is a valid
+        // shape and callers should not have to defend against a spurious
+        // null uri field.
+        let err = Error::resource_not_found(None);
+        assert_eq!(err.code, ErrorCode::ResourceNotFound);
+        assert!(err.data.is_none());
+    }
+
+    #[test]
+    fn into_internal_error_captures_source_message() {
+        // Wrapping a foreign error must produce InternalError with the
+        // source's Display string in `data`, so ops can trace back to the
+        // original failure.
+        let source = std::io::Error::other("disk gone");
+        let err = Error::into_internal_error(source);
+        assert_eq!(err.code, ErrorCode::InternalError);
+        assert_eq!(err.data, Some(serde_json::json!("disk gone")));
+    }
+
+    #[test]
+    fn display_uses_message_when_present() {
+        let err = Error::new(-32700, "boom");
+        assert_eq!(err.to_string(), "boom");
+    }
+
+    #[test]
+    fn display_falls_back_to_code_when_message_empty() {
+        let err = Error::new(-32700, "");
+        // The Display impl falls back to the numeric code when the
+        // message is empty, so log lines still identify the failure.
+        assert_eq!(err.to_string(), "-32700");
+    }
+
+    #[test]
+    fn display_appends_pretty_printed_data() {
+        let err = Error::new(-32603, "boom").data(serde_json::json!({ "why": "unknown" }));
+        let text = err.to_string();
+        assert!(text.starts_with("boom: "));
+        assert!(text.contains("\"why\": \"unknown\""));
+    }
+
+    #[test]
+    fn from_serde_json_error_maps_to_invalid_params_with_context() {
+        // Any parse failure must be reported as `InvalidParams` (per the
+        // ACP conventions) and carry the underlying serde message so
+        // clients can debug malformed payloads.
+        let json_err = serde_json::from_str::<serde_json::Value>("{ not json").unwrap_err();
+        let expected_message = json_err.to_string();
+        let err: Error = json_err.into();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        assert_eq!(err.data, Some(serde_json::json!(expected_message)));
+    }
+
+    #[test]
+    fn from_anyhow_error_downcasts_to_existing_acp_error() {
+        // When an anyhow chain already contains an ACP `Error`, the
+        // conversion should unwrap it rather than double-wrap in an
+        // opaque InternalError.
+        let original = Error::auth_required().data(serde_json::json!({ "hint": "login" }));
+        let wrapped: anyhow::Error = anyhow::Error::new(original.clone());
+        let restored: Error = wrapped.into();
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn from_anyhow_error_wraps_other_errors_as_internal() {
+        // A non-ACP anyhow error falls back to `internal_error` with the
+        // source's Display string in `data`.
+        let wrapped = anyhow::anyhow!("something exploded");
+        let err: Error = wrapped.into();
+        assert_eq!(err.code, ErrorCode::InternalError);
+        assert_eq!(err.data, Some(serde_json::json!("something exploded")));
+    }
 }
