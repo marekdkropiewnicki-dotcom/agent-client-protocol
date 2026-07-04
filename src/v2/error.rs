@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn into_internal_error_captures_source_message() {
-        let source = std::io::Error::new(std::io::ErrorKind::Other, "disk gone");
+        let source = std::io::Error::other("disk gone");
         let err = Error::into_internal_error(source);
         assert_eq!(err.code, ErrorCode::InternalError);
         assert_eq!(err.data, Some(serde_json::json!("disk gone")));

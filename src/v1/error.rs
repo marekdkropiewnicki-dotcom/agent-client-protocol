@@ -398,7 +398,7 @@ mod tests {
         // Wrapping a foreign error must produce InternalError with the
         // source's Display string in `data`, so ops can trace back to the
         // original failure.
-        let source = std::io::Error::new(std::io::ErrorKind::Other, "disk gone");
+        let source = std::io::Error::other("disk gone");
         let err = Error::into_internal_error(source);
         assert_eq!(err.code, ErrorCode::InternalError);
         assert_eq!(err.data, Some(serde_json::json!("disk gone")));

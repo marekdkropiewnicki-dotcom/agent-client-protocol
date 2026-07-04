@@ -93,8 +93,8 @@ mod tests {
     use serde_json::json;
     use serde_json::value::to_raw_value;
 
-    fn params(v: serde_json::Value) -> Arc<RawValue> {
-        Arc::from(to_raw_value(&v).unwrap())
+    fn params(v: &serde_json::Value) -> Arc<RawValue> {
+        Arc::from(to_raw_value(v).unwrap())
     }
 
     #[test]
@@ -103,7 +103,7 @@ mod tests {
         // and `method` is `#[serde(skip)]` because it is only used for
         // JSON-RPC routing. On the wire the payload must be *exactly*
         // the params object — no wrapping and no leaked routing info.
-        let req = ExtRequest::new("_my/method", params(json!({ "a": 1, "b": "x" })));
+        let req = ExtRequest::new("_my/method", params(&json!({ "a": 1, "b": "x" })));
         let serialized = serde_json::to_value(&req).unwrap();
         assert_eq!(serialized, json!({ "a": 1, "b": "x" }));
     }
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn ext_notification_serializes_only_params_and_drops_method() {
-        let notification = ExtNotification::new("_my/notify", params(json!({ "seq": 42 })));
+        let notification = ExtNotification::new("_my/notify", params(&json!({ "seq": 42 })));
         let serialized = serde_json::to_value(&notification).unwrap();
         assert_eq!(serialized, json!({ "seq": 42 }));
     }
@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn ext_response_is_transparent_over_inner_raw_value() {
-        let payload = params(json!({ "result": [1, 2, 3] }));
+        let payload = params(&json!({ "result": [1, 2, 3] }));
         let response = ExtResponse::new(payload);
 
         let serialized = serde_json::to_value(&response).unwrap();
@@ -151,7 +151,7 @@ mod tests {
     fn ext_request_preserves_method_in_memory() {
         // Even though the method is not on the wire, the struct MUST keep
         // it in memory so the routing layer can dispatch outgoing calls.
-        let req = ExtRequest::new("_foo/bar", params(json!(null)));
+        let req = ExtRequest::new("_foo/bar", params(&json!(null)));
         assert_eq!(&*req.method, "_foo/bar");
     }
 }
