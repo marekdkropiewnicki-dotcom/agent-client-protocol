@@ -86,3 +86,72 @@ impl ExtNotification {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use serde_json::value::to_raw_value;
+
+    fn params(v: serde_json::Value) -> Arc<RawValue> {
+        Arc::from(to_raw_value(&v).unwrap())
+    }
+
+    #[test]
+    fn ext_request_serializes_only_params_and_drops_method() {
+        // ExtRequest is `#[serde(transparent)]` over its `params` field,
+        // and `method` is `#[serde(skip)]` because it is only used for
+        // JSON-RPC routing. On the wire the payload must be *exactly*
+        // the params object — no wrapping and no leaked routing info.
+        let req = ExtRequest::new("_my/method", params(json!({ "a": 1, "b": "x" })));
+        let serialized = serde_json::to_value(&req).unwrap();
+        assert_eq!(serialized, json!({ "a": 1, "b": "x" }));
+    }
+
+    #[test]
+    fn ext_request_deserializes_to_empty_method_placeholder() {
+        // Because `method` is skipped, deserialization yields the default
+        // empty string — the routing layer is responsible for populating it
+        // from the outer JSON-RPC envelope. Guard against a regression that
+        // starts requiring `method` in the payload.
+        let raw = r#"{"anything":true}"#;
+        let req: ExtRequest = serde_json::from_str(raw).unwrap();
+        assert_eq!(&*req.method, "");
+        assert_eq!(req.params.get(), r#"{"anything":true}"#);
+    }
+
+    #[test]
+    fn ext_notification_serializes_only_params_and_drops_method() {
+        let notification = ExtNotification::new("_my/notify", params(json!({ "seq": 42 })));
+        let serialized = serde_json::to_value(&notification).unwrap();
+        assert_eq!(serialized, json!({ "seq": 42 }));
+    }
+
+    #[test]
+    fn ext_notification_deserializes_to_empty_method_placeholder() {
+        let raw = r#"{"ok":true}"#;
+        let notif: ExtNotification = serde_json::from_str(raw).unwrap();
+        assert_eq!(&*notif.method, "");
+        assert_eq!(notif.params.get(), r#"{"ok":true}"#);
+    }
+
+    #[test]
+    fn ext_response_is_transparent_over_inner_raw_value() {
+        let payload = params(json!({ "result": [1, 2, 3] }));
+        let response = ExtResponse::new(payload);
+
+        let serialized = serde_json::to_value(&response).unwrap();
+        assert_eq!(serialized, json!({ "result": [1, 2, 3] }));
+
+        let round: ExtResponse = serde_json::from_value(serialized).unwrap();
+        assert_eq!(round.0.get(), r#"{"result":[1,2,3]}"#);
+    }
+
+    #[test]
+    fn ext_request_preserves_method_in_memory() {
+        // Even though the method is not on the wire, the struct MUST keep
+        // it in memory so the routing layer can dispatch outgoing calls.
+        let req = ExtRequest::new("_foo/bar", params(json!(null)));
+        assert_eq!(&*req.method, "_foo/bar");
+    }
+}
