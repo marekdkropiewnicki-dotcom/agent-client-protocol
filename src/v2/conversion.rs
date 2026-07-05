@@ -9513,4 +9513,138 @@ mod tests {
             ))
         );
     }
+
+    // ---- MCP-over-ACP conversions ----
+    //
+    // These guard the six `IntoV1`/`IntoV2` impls added alongside the
+    // MCP-over-ACP message types. If a new field is added on one side of the
+    // conversion but not the other, both the value-level round-trip and the
+    // JSON-shape check below will surface the drift immediately.
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    fn mcp_sample_meta() -> serde_json::Map<String, serde_json::Value> {
+        let mut meta = serde_json::Map::new();
+        meta.insert("trace".to_string(), serde_json::json!("abc-123"));
+        meta
+    }
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[test]
+    fn round_trips_connect_mcp_request() {
+        let request = v1::ConnectMcpRequest::new("srv-1").meta(mcp_sample_meta());
+        assert_v1_round_trip::<v1::ConnectMcpRequest, v2::ConnectMcpRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ConnectMcpRequest, v2::ConnectMcpRequest>(request);
+    }
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[test]
+    fn round_trips_connect_mcp_response() {
+        let response = v1::ConnectMcpResponse::new("conn-1").meta(mcp_sample_meta());
+        assert_v1_round_trip::<v1::ConnectMcpResponse, v2::ConnectMcpResponse>(response.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ConnectMcpResponse, v2::ConnectMcpResponse>(response);
+    }
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[test]
+    fn round_trips_message_mcp_request_with_and_without_params() {
+        // With params present.
+        let params: serde_json::Map<String, serde_json::Value> =
+            [("cursor".to_string(), serde_json::json!("abc"))]
+                .into_iter()
+                .collect();
+        let with_params = v1::MessageMcpRequest::new("conn-1", "tools/list")
+            .params(params)
+            .meta(mcp_sample_meta());
+        assert_v1_round_trip::<v1::MessageMcpRequest, v2::MessageMcpRequest>(with_params.clone());
+        assert_json_eq_after_v1_to_v2::<v1::MessageMcpRequest, v2::MessageMcpRequest>(with_params);
+
+        // Without params — the invariant "omitted or null" from the type doc
+        // must survive both conversion and re-serialization.
+        let without_params = v1::MessageMcpRequest::new("conn-1", "tools/list");
+        assert_v1_round_trip::<v1::MessageMcpRequest, v2::MessageMcpRequest>(
+            without_params.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::MessageMcpRequest, v2::MessageMcpRequest>(
+            without_params,
+        );
+    }
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[test]
+    fn round_trips_message_mcp_notification() {
+        let params: serde_json::Map<String, serde_json::Value> =
+            [("progress".to_string(), serde_json::json!(0.5))]
+                .into_iter()
+                .collect();
+        let notification =
+            v1::MessageMcpNotification::new("conn-1", "notifications/progress").params(params);
+        assert_v1_round_trip::<v1::MessageMcpNotification, v2::MessageMcpNotification>(
+            notification.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::MessageMcpNotification, v2::MessageMcpNotification>(
+            notification,
+        );
+    }
+
+    /// [`MessageMcpResponse`] wraps an [`std::sync::Arc<serde_json::value::RawValue>`]
+    /// and does not derive `PartialEq`, so the generic round-trip helpers
+    /// can't be used. We instead assert JSON equality manually for a
+    /// representative object payload and a non-object payload.
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[test]
+    fn round_trips_message_mcp_response_via_json_shape() {
+        let cases = [
+            serde_json::json!({ "tools": [ { "name": "echo" } ] }),
+            serde_json::json!([1, 2, 3]),
+            serde_json::json!("plain-string"),
+            serde_json::json!(null),
+        ];
+        for payload in cases {
+            let raw: std::sync::Arc<serde_json::value::RawValue> =
+                serde_json::from_str(&payload.to_string()).unwrap();
+            let v1_value = v1::MessageMcpResponse::new(raw);
+            let v1_json = serde_json::to_value(&v1_value).unwrap();
+
+            let as_v2: v2::MessageMcpResponse = v1_to_v2(v1_value).unwrap();
+            let v2_json = serde_json::to_value(&as_v2).unwrap();
+            assert_eq!(v1_json, v2_json, "shape drift in v1 -> v2 for {payload}");
+
+            let back_to_v1: v1::MessageMcpResponse = v2_to_v1(as_v2).unwrap();
+            let v1_json_after = serde_json::to_value(&back_to_v1).unwrap();
+            assert_eq!(
+                v2_json, v1_json_after,
+                "shape drift in v2 -> v1 for {payload}"
+            );
+        }
+    }
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[test]
+    fn round_trips_disconnect_mcp_request() {
+        let request = v1::DisconnectMcpRequest::new("conn-1").meta(mcp_sample_meta());
+        assert_v1_round_trip::<v1::DisconnectMcpRequest, v2::DisconnectMcpRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::DisconnectMcpRequest, v2::DisconnectMcpRequest>(
+            request,
+        );
+    }
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[test]
+    fn round_trips_disconnect_mcp_response() {
+        // Empty payload (the common case, thanks to `Default`).
+        let empty = v1::DisconnectMcpResponse::new();
+        assert_v1_round_trip::<v1::DisconnectMcpResponse, v2::DisconnectMcpResponse>(empty.clone());
+        assert_json_eq_after_v1_to_v2::<v1::DisconnectMcpResponse, v2::DisconnectMcpResponse>(
+            empty,
+        );
+
+        // With meta populated.
+        let with_meta = v1::DisconnectMcpResponse::new().meta(mcp_sample_meta());
+        assert_v1_round_trip::<v1::DisconnectMcpResponse, v2::DisconnectMcpResponse>(
+            with_meta.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::DisconnectMcpResponse, v2::DisconnectMcpResponse>(
+            with_meta,
+        );
+    }
 }
