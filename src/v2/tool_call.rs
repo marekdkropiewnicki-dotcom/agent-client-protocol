@@ -673,3 +673,206 @@ impl ToolCallLocation {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Coverage for tool-call merge semantics and wire format.
+    //!
+    //! These types drive one of the most visible surfaces of the protocol
+    //! (tool execution progress in the client UI) and previously had no
+    //! dedicated tests. In particular:
+    //!
+    //! * [`ToolCall::update`] applies partial updates in place and is the
+    //!   canonical way agents report progress. A mistake here would silently
+    //!   drop or overwrite user-visible tool state.
+    //! * `TryFrom<ToolCallUpdate> for ToolCall` and `From<ToolCall> for
+    //!   ToolCallUpdate` are the bridge between "first update" and "existing
+    //!   tool call" flows and depend on a `title` invariant that is easy to
+    //!   regress.
+    //! * The `#[serde(skip_serializing_if)]` guards on the default
+    //!   [`ToolKind`] and [`ToolCallStatus`] variants keep the wire format
+    //!   compact and backwards-compatible with older clients.
+
+    use super::*;
+    use crate::v2::ErrorCode;
+    use serde_json::json;
+
+    fn sample_tool_call() -> ToolCall {
+        ToolCall::new("call-1", "Read file")
+            .kind(ToolKind::Read)
+            .status(ToolCallStatus::InProgress)
+            .content(vec![ToolCallContent::from("partial")])
+            .locations(vec![ToolCallLocation::new("/tmp/a.txt").line(3u32)])
+            .raw_input(json!({ "path": "/tmp/a.txt" }))
+    }
+
+    #[test]
+    fn tool_call_update_applies_all_provided_fields() {
+        let mut call = sample_tool_call();
+        let fields = ToolCallUpdateFields::new()
+            .title("Reading file")
+            .kind(ToolKind::Execute)
+            .status(ToolCallStatus::Completed)
+            .content(vec![ToolCallContent::from("done")])
+            .locations(vec![ToolCallLocation::new("/tmp/b.txt")])
+            .raw_input(json!({ "path": "/tmp/b.txt" }))
+            .raw_output(json!({ "bytes": 42 }));
+
+        call.update(fields);
+
+        assert_eq!(call.title, "Reading file");
+        assert_eq!(call.kind, ToolKind::Execute);
+        assert_eq!(call.status, ToolCallStatus::Completed);
+        assert_eq!(call.content.len(), 1);
+        assert_eq!(call.locations.len(), 1);
+        assert_eq!(call.locations[0].path, PathBuf::from("/tmp/b.txt"));
+        assert_eq!(call.raw_input, Some(json!({ "path": "/tmp/b.txt" })));
+        assert_eq!(call.raw_output, Some(json!({ "bytes": 42 })));
+    }
+
+    #[test]
+    fn tool_call_update_with_empty_fields_leaves_state_unchanged() {
+        let mut call = sample_tool_call();
+        let before = call.clone();
+
+        call.update(ToolCallUpdateFields::new());
+
+        assert_eq!(call, before);
+    }
+
+    #[test]
+    fn tool_call_update_overwrites_collections_instead_of_extending() {
+        // The docs on `ToolCallUpdate` promise: "Collections (content,
+        // locations) are overwritten, not extended." Lock that behavior in.
+        let mut call = sample_tool_call();
+        assert_eq!(call.content.len(), 1);
+        assert_eq!(call.locations.len(), 1);
+
+        call.update(
+            ToolCallUpdateFields::new()
+                .content(Vec::<ToolCallContent>::new())
+                .locations(Vec::<ToolCallLocation>::new()),
+        );
+
+        assert!(call.content.is_empty());
+        assert!(call.locations.is_empty());
+    }
+
+    #[test]
+    fn tool_call_update_does_not_clear_raw_input_when_field_absent() {
+        // `raw_input`/`raw_output` are `Option<Value>` on both sides. The
+        // update should only overwrite when a value is provided, otherwise
+        // agents that stream successive updates would lose earlier inputs.
+        let mut call = sample_tool_call();
+        assert!(call.raw_input.is_some());
+
+        call.update(ToolCallUpdateFields::new().status(ToolCallStatus::Completed));
+
+        assert_eq!(call.raw_input, Some(json!({ "path": "/tmp/a.txt" })));
+        assert_eq!(call.status, ToolCallStatus::Completed);
+    }
+
+    #[test]
+    fn tool_call_try_from_update_requires_title() {
+        let update = ToolCallUpdate::new("call-1", ToolCallUpdateFields::new());
+
+        let err = ToolCall::try_from(update).expect_err("expected InvalidParams");
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        assert_eq!(err.data, Some(json!("title is required for a tool call")));
+    }
+
+    #[test]
+    fn tool_call_try_from_update_uses_defaults_for_missing_fields() {
+        let update = ToolCallUpdate::new("call-1", ToolCallUpdateFields::new().title("Do a thing"));
+
+        let call = ToolCall::try_from(update).expect("should build");
+        assert_eq!(call.tool_call_id, ToolCallId::new("call-1"));
+        assert_eq!(call.title, "Do a thing");
+        assert_eq!(call.kind, ToolKind::default());
+        assert_eq!(call.status, ToolCallStatus::default());
+        assert!(call.content.is_empty());
+        assert!(call.locations.is_empty());
+        assert!(call.raw_input.is_none());
+        assert!(call.raw_output.is_none());
+        assert!(call.meta.is_none());
+    }
+
+    #[test]
+    fn tool_call_update_roundtrips_through_try_from() {
+        let original = sample_tool_call();
+        let update: ToolCallUpdate = original.clone().into();
+        let rebuilt = ToolCall::try_from(update).expect("should rebuild");
+        assert_eq!(rebuilt, original);
+    }
+
+    #[test]
+    fn tool_call_default_kind_and_status_are_skipped_on_serialization() {
+        // A freshly created ToolCall has default kind (Other) and status
+        // (Pending). Both should be omitted so we don't inflate the wire
+        // format for the common case and don't force older clients to
+        // handle the new fields.
+        let call = ToolCall::new("call-1", "Doing something");
+        let json = serde_json::to_value(&call).unwrap();
+        let obj = json.as_object().expect("expected object");
+        assert!(!obj.contains_key("kind"), "kind should be skipped: {json}");
+        assert!(
+            !obj.contains_key("status"),
+            "status should be skipped: {json}"
+        );
+        assert!(!obj.contains_key("content"));
+        assert!(!obj.contains_key("locations"));
+    }
+
+    #[test]
+    fn tool_call_non_default_status_is_serialized() {
+        let call = ToolCall::new("call-1", "Working").status(ToolCallStatus::InProgress);
+        let json = serde_json::to_value(&call).unwrap();
+        assert_eq!(json["status"], json!("in_progress"));
+    }
+
+    #[test]
+    fn tool_call_unknown_kind_falls_back_to_other() {
+        // `ToolKind` uses `#[serde(other)]` on `Other` so forward-compatible
+        // clients don't crash when the agent introduces a new kind.
+        let call: ToolCall = serde_json::from_value(json!({
+            "toolCallId": "call-1",
+            "title": "Future thing",
+            "kind": "totally_new_kind"
+        }))
+        .expect("should tolerate unknown kind");
+        assert_eq!(call.kind, ToolKind::Other);
+    }
+
+    #[test]
+    fn tool_call_update_skips_invalid_content_and_locations() {
+        // Both fields use `DefaultOnError<VecSkipError<...>>`, so malformed
+        // entries in a stream from a peer must not poison the whole update.
+        let raw = json!({
+            "toolCallId": "call-1",
+            "content": [
+                {
+                    "type": "content",
+                    "content": { "type": "text", "text": "ok" }
+                },
+                { "type": "definitely_not_a_variant" }
+            ],
+            "locations": [
+                { "path": "/tmp/a.txt" },
+                { "path": 123 }
+            ]
+        });
+
+        let update: ToolCallUpdate =
+            serde_json::from_value(raw).expect("update should tolerate garbage");
+        let content = update.fields.content.expect("content should decode");
+        assert_eq!(content.len(), 1, "invalid content entry should be skipped");
+
+        let locations = update.fields.locations.expect("locations should decode");
+        assert_eq!(
+            locations.len(),
+            1,
+            "invalid location entry should be skipped"
+        );
+        assert_eq!(locations[0].path, PathBuf::from("/tmp/a.txt"));
+    }
+}
