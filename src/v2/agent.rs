@@ -6389,4 +6389,163 @@ mod test_serialization {
         let deserialized: AgentCapabilities = serde_json::from_value(json).unwrap();
         assert!(deserialized.providers.is_some());
     }
+
+    // --- Logout method stabilization coverage (PR #1273) ---
+    //
+    // The logout method was promoted from `unstable_logout` to the stable API in
+    // PR #1273 without any accompanying tests. These tests lock in the wire
+    // format and enum routing so future refactors can't silently break clients.
+
+    #[test]
+    fn test_logout_method_name_constant() {
+        assert_eq!(AGENT_METHOD_NAMES.logout, "logout");
+        assert_eq!(LOGOUT_METHOD_NAME, "logout");
+    }
+
+    #[test]
+    fn test_logout_client_request_method_dispatch() {
+        assert_eq!(
+            ClientRequest::LogoutRequest(LogoutRequest::new()).method(),
+            "logout"
+        );
+    }
+
+    #[test]
+    fn test_logout_request_serializes_to_empty_object() {
+        let request = LogoutRequest::new();
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json, json!({}));
+
+        let round_trip: LogoutRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(round_trip, request);
+    }
+
+    #[test]
+    fn test_logout_response_serializes_to_empty_object() {
+        let response = LogoutResponse::new();
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json, json!({}));
+
+        let round_trip: LogoutResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(round_trip, response);
+    }
+
+    #[test]
+    fn test_logout_request_accepts_missing_params() {
+        // `session/prompt`-style handlers may omit `params` entirely for
+        // parameter-less methods. Verify LogoutRequest tolerates that shape
+        // when decoded from an empty JSON object.
+        let request: LogoutRequest = serde_json::from_str("{}").unwrap();
+        assert!(request.meta.is_none());
+    }
+
+    #[test]
+    fn test_logout_response_default_deserialization() {
+        // The AgentResponse enum wraps LogoutResponse with `#[serde(default)]`,
+        // which relies on LogoutResponse: Default. This documents that contract.
+        let response: LogoutResponse = LogoutResponse::default();
+        assert_eq!(response, LogoutResponse::new());
+    }
+
+    #[test]
+    fn test_agent_auth_capabilities_default_is_empty() {
+        let caps = AgentAuthCapabilities::default();
+        let json = serde_json::to_value(&caps).unwrap();
+        // No logout capability advertised -> emit an empty object so peers can
+        // detect the absence of features without inspecting each optional key.
+        assert_eq!(json, json!({}));
+        assert!(caps.logout.is_none());
+    }
+
+    #[test]
+    fn test_agent_auth_capabilities_with_logout() {
+        let caps = AgentAuthCapabilities::new().logout(LogoutCapabilities::new());
+        let json = serde_json::to_value(&caps).unwrap();
+        assert_eq!(
+            json,
+            json!({
+                "logout": {}
+            })
+        );
+
+        let deserialized: AgentAuthCapabilities = serde_json::from_value(json).unwrap();
+        assert!(deserialized.logout.is_some());
+    }
+
+    #[test]
+    fn test_agent_auth_capabilities_tolerates_invalid_logout() {
+        // `logout` uses `#[serde_as(deserialize_as = "DefaultOnError")]`, so a
+        // peer that sends a malformed value should not fail initialization.
+        // This protects backwards compatibility if the shape ever evolves.
+        let json = json!({
+            "logout": "not-an-object"
+        });
+        let caps: AgentAuthCapabilities = serde_json::from_value(json).unwrap();
+        assert!(caps.logout.is_none());
+    }
+
+    #[test]
+    fn test_agent_capabilities_missing_auth_defaults_to_empty() {
+        // Existing clients on the older schema don't send an `auth` field.
+        // The `#[serde(default)]` on `AgentCapabilities.auth` guarantees a
+        // silent, non-breaking upgrade path now that logout is stable.
+        let json = json!({});
+        let caps: AgentCapabilities = serde_json::from_value(json).unwrap();
+        assert_eq!(caps.auth, AgentAuthCapabilities::default());
+        assert!(caps.auth.logout.is_none());
+    }
+
+    #[test]
+    fn test_agent_capabilities_with_auth_logout_serializes() {
+        let caps = AgentCapabilities::new()
+            .auth(AgentAuthCapabilities::new().logout(LogoutCapabilities::new()));
+
+        let json = serde_json::to_value(&caps).unwrap();
+        assert_eq!(json["auth"], json!({ "logout": {} }));
+
+        let deserialized: AgentCapabilities = serde_json::from_value(json).unwrap();
+        assert!(deserialized.auth.logout.is_some());
+    }
+
+    // --- Provider method rename coverage (PR #1272) ---
+    //
+    // PR #1272 renamed the provider method types from plural to singular
+    // (`providers/set` / `providers/disable`) since both operate on a single
+    // provider. Without direct wire-format tests, a future rename could
+    // silently drift the constant back to the plural form and break clients.
+
+    #[cfg(feature = "unstable_llm_providers")]
+    #[test]
+    fn test_providers_method_name_constants_are_correct() {
+        assert_eq!(AGENT_METHOD_NAMES.providers_list, "providers/list");
+        assert_eq!(AGENT_METHOD_NAMES.providers_set, "providers/set");
+        assert_eq!(AGENT_METHOD_NAMES.providers_disable, "providers/disable");
+
+        assert_eq!(PROVIDERS_LIST_METHOD_NAME, "providers/list");
+        assert_eq!(PROVIDERS_SET_METHOD_NAME, "providers/set");
+        assert_eq!(PROVIDERS_DISABLE_METHOD_NAME, "providers/disable");
+    }
+
+    #[cfg(feature = "unstable_llm_providers")]
+    #[test]
+    fn test_client_request_provider_method_dispatch() {
+        assert_eq!(
+            ClientRequest::ListProvidersRequest(ListProvidersRequest::new()).method(),
+            "providers/list"
+        );
+        assert_eq!(
+            ClientRequest::SetProviderRequest(SetProviderRequest::new(
+                "main",
+                LlmProtocol::Anthropic,
+                "https://api.anthropic.com",
+            ))
+            .method(),
+            "providers/set"
+        );
+        assert_eq!(
+            ClientRequest::DisableProviderRequest(DisableProviderRequest::new("secondary"))
+                .method(),
+            "providers/disable"
+        );
+    }
 }
