@@ -9513,4 +9513,88 @@ mod tests {
             ))
         );
     }
+
+    // Logout was stabilized in df33658 (moved out from behind the
+    // `unstable_logout` feature flag). It is now on the ambient v1<->v2
+    // conversion surface, so a v2 divergence from v1 must be caught by
+    // dedicated round-trip tests — otherwise a dropped field or renamed
+    // variant would silently corrupt logout traffic in mixed-version
+    // deployments.
+
+    #[test]
+    fn round_trips_logout_request() {
+        let request = v1::LogoutRequest::new();
+        assert_v1_round_trip::<v1::LogoutRequest, v2::LogoutRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LogoutRequest, v2::LogoutRequest>(request);
+    }
+
+    #[test]
+    fn round_trips_logout_response() {
+        let response = v1::LogoutResponse::new();
+        assert_v1_round_trip::<v1::LogoutResponse, v2::LogoutResponse>(response.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LogoutResponse, v2::LogoutResponse>(response);
+    }
+
+    #[test]
+    fn round_trips_logout_capabilities() {
+        let caps = v1::LogoutCapabilities::new();
+        assert_v1_round_trip::<v1::LogoutCapabilities, v2::LogoutCapabilities>(caps.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LogoutCapabilities, v2::LogoutCapabilities>(caps);
+    }
+
+    #[test]
+    fn round_trips_agent_auth_capabilities_with_logout() {
+        // Both the "advertised" and "not advertised" states must survive
+        // conversion — the latter is what most agents actually send today.
+        let unset = v1::AgentAuthCapabilities::new();
+        assert_v1_round_trip::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(unset.clone());
+        assert_json_eq_after_v1_to_v2::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
+            unset,
+        );
+
+        let advertised = v1::AgentAuthCapabilities::new().logout(v1::LogoutCapabilities::new());
+        assert_v1_round_trip::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
+            advertised.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
+            advertised,
+        );
+    }
+
+    #[test]
+    fn round_trips_initialize_response_with_logout_advertised() {
+        // Full end-to-end path an agent actually uses at startup:
+        // InitializeResponse -> agent_capabilities -> auth -> logout. If any
+        // link in this chain regresses on the v2 side, this test fails.
+        let response = v1::InitializeResponse::new(ProtocolVersion::V1).agent_capabilities(
+            v1::AgentCapabilities::new()
+                .auth(v1::AgentAuthCapabilities::new().logout(v1::LogoutCapabilities::new())),
+        );
+        assert_v1_round_trip::<v1::InitializeResponse, v2::InitializeResponse>(response.clone());
+        assert_json_eq_after_v1_to_v2::<v1::InitializeResponse, v2::InitializeResponse>(response);
+    }
+
+    #[test]
+    fn round_trips_client_request_logout_variant() {
+        // Guards the wire-level ClientRequest routing: a converted request
+        // must still round-trip and still report the "logout" method name
+        // after crossing the v2 boundary and back.
+        let original = v1::ClientRequest::LogoutRequest(v1::LogoutRequest::new());
+        let as_v2 = v1_to_v2(original.clone()).expect("v1 -> v2");
+        assert!(matches!(as_v2, v2::ClientRequest::LogoutRequest(_)));
+        let back = v2_to_v1(as_v2).expect("v2 -> v1");
+        assert!(matches!(back, v1::ClientRequest::LogoutRequest(_)));
+        assert_eq!(back.method(), "logout");
+    }
+
+    #[test]
+    fn round_trips_agent_response_logout_variant() {
+        // Mirror of the ClientRequest test for the response side; ensures
+        // AgentResponse::LogoutResponse is routed through both directions.
+        let original = v1::AgentResponse::LogoutResponse(v1::LogoutResponse::new());
+        let as_v2 = v1_to_v2(original).expect("v1 -> v2");
+        assert!(matches!(as_v2, v2::AgentResponse::LogoutResponse(_)));
+        let back = v2_to_v1(as_v2).expect("v2 -> v1");
+        assert!(matches!(back, v1::AgentResponse::LogoutResponse(_)));
+    }
 }
