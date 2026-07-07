@@ -6389,4 +6389,82 @@ mod test_serialization {
         let deserialized: AgentCapabilities = serde_json::from_value(json).unwrap();
         assert!(deserialized.providers.is_some());
     }
+
+    // The v2 draft namespace currently mirrors v1's wire format; these tests
+    // mirror the v1 logout coverage so v2 cannot drift silently from v1.
+    // See the matching v1 tests for the full rationale.
+
+    #[test]
+    fn test_logout_method_name_and_dispatch() {
+        assert_eq!(AGENT_METHOD_NAMES.logout, "logout");
+        assert_eq!(LOGOUT_METHOD_NAME, "logout");
+        assert_eq!(
+            ClientRequest::LogoutRequest(LogoutRequest::new()).method(),
+            "logout"
+        );
+    }
+
+    #[test]
+    fn test_logout_request_serialization() {
+        let request = LogoutRequest::new();
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json, json!({}));
+        let deserialized: LogoutRequest = serde_json::from_value(json).unwrap();
+        assert!(deserialized.meta.is_none());
+    }
+
+    #[test]
+    fn test_logout_response_serialization() {
+        let response = LogoutResponse::new();
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json, json!({}));
+        let deserialized: LogoutResponse = serde_json::from_value(json).unwrap();
+        assert!(deserialized.meta.is_none());
+    }
+
+    #[test]
+    fn test_logout_capabilities_empty_object_means_supported() {
+        let caps = LogoutCapabilities::new();
+        let json = serde_json::to_value(&caps).unwrap();
+        assert_eq!(json, json!({}));
+        let deserialized: LogoutCapabilities = serde_json::from_value(json).unwrap();
+        assert!(deserialized.meta.is_none());
+    }
+
+    #[test]
+    fn test_agent_auth_capabilities_with_logout() {
+        let caps = AgentAuthCapabilities::new().logout(LogoutCapabilities::new());
+        let json = serde_json::to_value(&caps).unwrap();
+        assert_eq!(json, json!({ "logout": {} }));
+        let deserialized: AgentAuthCapabilities = serde_json::from_value(json).unwrap();
+        assert!(deserialized.logout.is_some());
+    }
+
+    #[test]
+    fn test_agent_auth_capabilities_default_omits_logout_field() {
+        let caps = AgentAuthCapabilities::new();
+        let json = serde_json::to_value(&caps).unwrap();
+        assert_eq!(json, json!({}));
+        assert!(!json.as_object().unwrap().contains_key("logout"));
+    }
+
+    #[test]
+    fn test_agent_auth_capabilities_default_on_error_logout() {
+        // Same forgiving-decode contract as v1; if v2 ever drops the
+        // `DefaultOnError` annotation on `logout`, this test will start
+        // failing because deserialization would then hard-error.
+        let json = json!({ "logout": "not-a-capability-object" });
+        let deserialized: AgentAuthCapabilities = serde_json::from_value(json).unwrap();
+        assert!(deserialized.logout.is_none());
+    }
+
+    #[test]
+    fn test_agent_capabilities_carries_auth_logout() {
+        let caps = AgentCapabilities::new()
+            .auth(AgentAuthCapabilities::new().logout(LogoutCapabilities::new()));
+        let json = serde_json::to_value(&caps).unwrap();
+        assert_eq!(json["auth"], json!({ "logout": {} }));
+        let deserialized: AgentCapabilities = serde_json::from_value(json).unwrap();
+        assert!(deserialized.auth.logout.is_some());
+    }
 }
