@@ -9946,6 +9946,76 @@ mod tests {
         >(response);
     }
 
+    // ------------------------------------------------------
+    // ContentBlock variants not previously covered.
+    // The existing `round_trips_prompt_request_with_content_variants`
+    // test only exercises Text / Image / ResourceLink. Audio,
+    // EmbeddedResource (both inner variants), and Annotations carry
+    // the largest per-variant conversion code, so they are the most
+    // likely places for a silent v1<->v2 drift.
+    // ------------------------------------------------------
+
+    #[test]
+    fn round_trips_audio_content_block() {
+        let block = v1::ContentBlock::Audio(
+            v1::AudioContent::new("base64-audio-data", "audio/wav")
+                .annotations(v1::Annotations::new().priority(0.7)),
+        );
+        assert_v1_round_trip::<v1::ContentBlock, v2::ContentBlock>(block.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ContentBlock, v2::ContentBlock>(block);
+    }
+
+    #[test]
+    fn round_trips_embedded_resource_text_variant() {
+        let block = v1::ContentBlock::Resource(v1::EmbeddedResource::new(
+            v1::EmbeddedResourceResource::TextResourceContents(
+                v1::TextResourceContents::new("hello", "file:///a.txt").mime_type("text/plain"),
+            ),
+        ));
+        assert_v1_round_trip::<v1::ContentBlock, v2::ContentBlock>(block.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ContentBlock, v2::ContentBlock>(block);
+    }
+
+    #[test]
+    fn round_trips_embedded_resource_blob_variant() {
+        // EmbeddedResourceResource is #[serde(untagged)], so exercising
+        // both variants matters: the wrong variant would be silently
+        // accepted at deserialize time.
+        let block = v1::ContentBlock::Resource(v1::EmbeddedResource::new(
+            v1::EmbeddedResourceResource::BlobResourceContents(
+                v1::BlobResourceContents::new("data==", "file:///a.bin")
+                    .mime_type("application/octet-stream"),
+            ),
+        ));
+        assert_v1_round_trip::<v1::ContentBlock, v2::ContentBlock>(block.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ContentBlock, v2::ContentBlock>(block);
+    }
+
+    #[test]
+    fn round_trips_annotations_and_role_enum() {
+        // Annotations carries the Role enum, an f64 priority, an
+        // optional timestamp, and free-form meta. It's used across
+        // every content block, so drift here has a wide blast radius.
+        let annotations = v1::Annotations::new()
+            .audience(Some(vec![v1::Role::Assistant, v1::Role::User]))
+            .last_modified(Some("2026-05-17T12:34:56Z".to_string()))
+            .priority(Some(0.5))
+            .meta(serde_json::Map::from_iter([(
+                "source".to_string(),
+                serde_json::json!("tool_output"),
+            )]));
+
+        let block = v1::ContentBlock::Text(v1::TextContent::new("annotated").annotations(
+            annotations.clone(),
+        ));
+        assert_v1_round_trip::<v1::ContentBlock, v2::ContentBlock>(block.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ContentBlock, v2::ContentBlock>(block);
+
+        // Both Role variants explicitly, to catch enum reordering.
+        assert_v1_round_trip::<v1::Role, v2::Role>(v1::Role::Assistant);
+        assert_v1_round_trip::<v1::Role, v2::Role>(v1::Role::User);
+    }
+
     /// Grouped select options serialize as an untagged enum variant
     /// distinct from ungrouped options. Round-trip tests protect the
     /// serde ordering because `#[serde(untagged)]` will silently accept
