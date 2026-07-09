@@ -9823,4 +9823,170 @@ mod tests {
         assert_v1_round_trip::<v1::SessionInfoUpdate, v2::SessionInfoUpdate>(with_values.clone());
         assert_json_eq_after_v1_to_v2::<v1::SessionInfoUpdate, v2::SessionInfoUpdate>(with_values);
     }
+
+    // ---------------------------------------------------
+    // Set-session-* method conversions and their supporting
+    // SessionModeState / SessionModelState / SessionConfigOption.
+    // ---------------------------------------------------
+
+    #[test]
+    fn round_trips_set_session_mode_request_and_response() {
+        let request = v1::SetSessionModeRequest::new("sess_mode_1", "architect").meta(
+            serde_json::Map::from_iter([("source".to_string(), serde_json::json!("hotkey"))]),
+        );
+        assert_v1_round_trip::<v1::SetSessionModeRequest, v2::SetSessionModeRequest>(
+            request.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::SetSessionModeRequest, v2::SetSessionModeRequest>(
+            request,
+        );
+
+        let response = v1::SetSessionModeResponse::new();
+        assert_v1_round_trip::<v1::SetSessionModeResponse, v2::SetSessionModeResponse>(
+            response.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::SetSessionModeResponse, v2::SetSessionModeResponse>(
+            response,
+        );
+    }
+
+    #[test]
+    fn round_trips_session_mode_state_with_descriptions() {
+        let state = v1::SessionModeState::new(
+            "ask",
+            vec![
+                v1::SessionMode::new("ask", "Ask").description("Answer questions only"),
+                v1::SessionMode::new("architect", "Architect"),
+                v1::SessionMode::new("code", "Code").description("Write code"),
+            ],
+        );
+        assert_v1_round_trip::<v1::SessionModeState, v2::SessionModeState>(state.clone());
+        assert_json_eq_after_v1_to_v2::<v1::SessionModeState, v2::SessionModeState>(state);
+    }
+
+    #[cfg(feature = "unstable_session_model")]
+    #[test]
+    fn round_trips_set_session_model_request_and_response() {
+        let request =
+            v1::SetSessionModelRequest::new("sess_model_1", v1::ModelId::new("claude-opus"));
+        assert_v1_round_trip::<v1::SetSessionModelRequest, v2::SetSessionModelRequest>(
+            request.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::SetSessionModelRequest, v2::SetSessionModelRequest>(
+            request,
+        );
+
+        let response = v1::SetSessionModelResponse::default();
+        assert_v1_round_trip::<v1::SetSessionModelResponse, v2::SetSessionModelResponse>(
+            response.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::SetSessionModelResponse, v2::SetSessionModelResponse>(
+            response,
+        );
+    }
+
+    #[cfg(feature = "unstable_session_model")]
+    #[test]
+    fn round_trips_session_model_state_with_multiple_models() {
+        let state = v1::SessionModelState::new(
+            v1::ModelId::new("claude-opus"),
+            vec![
+                v1::ModelInfo::new(v1::ModelId::new("claude-opus"), "Claude Opus")
+                    .description("Highest capability"),
+                v1::ModelInfo::new(v1::ModelId::new("claude-sonnet"), "Claude Sonnet"),
+            ],
+        );
+        assert_v1_round_trip::<v1::SessionModelState, v2::SessionModelState>(state.clone());
+        assert_json_eq_after_v1_to_v2::<v1::SessionModelState, v2::SessionModelState>(state);
+    }
+
+    #[test]
+    fn round_trips_set_session_config_option_request_and_response() {
+        // We only run the non-boolean path here because the boolean
+        // variant compiles to a different `value` field type behind the
+        // `unstable_boolean_config` feature gate.
+        #[cfg(not(feature = "unstable_boolean_config"))]
+        let request =
+            v1::SetSessionConfigOptionRequest::new("sess_cfg_1", "theme", "dark");
+        #[cfg(feature = "unstable_boolean_config")]
+        let request = v1::SetSessionConfigOptionRequest::new(
+            "sess_cfg_1",
+            "theme",
+            v1::SessionConfigValueId::new("dark"),
+        );
+        assert_v1_round_trip::<v1::SetSessionConfigOptionRequest, v2::SetSessionConfigOptionRequest>(
+            request.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<
+            v1::SetSessionConfigOptionRequest,
+            v2::SetSessionConfigOptionRequest,
+        >(request);
+
+        let response = v1::SetSessionConfigOptionResponse::new(vec![
+            v1::SessionConfigOption::select(
+                "theme",
+                "Theme",
+                "dark",
+                vec![
+                    v1::SessionConfigSelectOption::new("dark", "Dark"),
+                    v1::SessionConfigSelectOption::new("light", "Light"),
+                ],
+            )
+            .description("Editor theme")
+            .category(v1::SessionConfigOptionCategory::Other(
+                "appearance".to_string(),
+            )),
+        ]);
+        assert_v1_round_trip::<v1::SetSessionConfigOptionResponse, v2::SetSessionConfigOptionResponse>(
+            response.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<
+            v1::SetSessionConfigOptionResponse,
+            v2::SetSessionConfigOptionResponse,
+        >(response);
+    }
+
+    /// Grouped select options serialize as an untagged enum variant
+    /// distinct from ungrouped options. Round-trip tests protect the
+    /// serde ordering because `#[serde(untagged)]` will silently accept
+    /// the wrong variant if the shape drifts.
+    #[test]
+    fn round_trips_grouped_session_config_options() {
+        let response = v1::SetSessionConfigOptionResponse::new(vec![v1::SessionConfigOption::new(
+            "model",
+            "Model",
+            v1::SessionConfigKind::Select(v1::SessionConfigSelect::new(
+                "anthropic/claude-opus",
+                vec![
+                    v1::SessionConfigSelectGroup::new(
+                        "anthropic",
+                        "Anthropic",
+                        vec![
+                            v1::SessionConfigSelectOption::new(
+                                "anthropic/claude-opus",
+                                "Opus",
+                            ),
+                            v1::SessionConfigSelectOption::new(
+                                "anthropic/claude-sonnet",
+                                "Sonnet",
+                            ),
+                        ],
+                    ),
+                    v1::SessionConfigSelectGroup::new(
+                        "openai",
+                        "OpenAI",
+                        vec![v1::SessionConfigSelectOption::new("openai/gpt-5", "GPT-5")],
+                    ),
+                ],
+            )),
+        )
+        .category(v1::SessionConfigOptionCategory::Model)]);
+        assert_v1_round_trip::<v1::SetSessionConfigOptionResponse, v2::SetSessionConfigOptionResponse>(
+            response.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<
+            v1::SetSessionConfigOptionResponse,
+            v2::SetSessionConfigOptionResponse,
+        >(response);
+    }
 }
