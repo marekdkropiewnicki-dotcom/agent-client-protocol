@@ -9635,4 +9635,192 @@ mod tests {
             caps,
         );
     }
+
+    // ---------------------------------------------------
+    // session/list, session/load, session/resume, close, and
+    // supporting SessionInfo/SessionInfoUpdate types.
+    // ---------------------------------------------------
+
+    #[test]
+    fn round_trips_list_sessions_request_variants() {
+        // Empty (default) request — the important edge case is the
+        // (Option<PathBuf>, Option<String>) pair both being `None`.
+        let empty = v1::ListSessionsRequest::new();
+        assert_v1_round_trip::<v1::ListSessionsRequest, v2::ListSessionsRequest>(empty.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ListSessionsRequest, v2::ListSessionsRequest>(empty);
+
+        // Fully populated: cwd + pagination cursor + meta.
+        let populated = v1::ListSessionsRequest::new()
+            .cwd(std::path::PathBuf::from("/workspace"))
+            .cursor("cursor-token-abc")
+            .meta(serde_json::Map::from_iter([(
+                "trace".to_string(),
+                serde_json::json!("req-1"),
+            )]));
+        assert_v1_round_trip::<v1::ListSessionsRequest, v2::ListSessionsRequest>(populated.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ListSessionsRequest, v2::ListSessionsRequest>(
+            populated,
+        );
+    }
+
+    #[test]
+    fn round_trips_list_sessions_response_with_pagination() {
+        let sessions = vec![
+            v1::SessionInfo::new("sess_a", "/w/a").title("Session A"),
+            v1::SessionInfo::new("sess_b", "/w/b")
+                .title("Session B")
+                .updated_at("2026-05-01T00:00:00Z"),
+        ];
+
+        let response = v1::ListSessionsResponse::new(sessions).next_cursor("next-cursor");
+        assert_v1_round_trip::<v1::ListSessionsResponse, v2::ListSessionsResponse>(response.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ListSessionsResponse, v2::ListSessionsResponse>(
+            response,
+        );
+
+        // Terminal page: empty sessions, absent cursor.
+        let empty = v1::ListSessionsResponse::new(vec![]);
+        assert_v1_round_trip::<v1::ListSessionsResponse, v2::ListSessionsResponse>(empty.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ListSessionsResponse, v2::ListSessionsResponse>(empty);
+    }
+
+    #[test]
+    fn round_trips_session_list_capabilities() {
+        let caps = v1::SessionListCapabilities::new().meta(serde_json::Map::from_iter([(
+            "supports_paging".to_string(),
+            serde_json::json!(true),
+        )]));
+        assert_v1_round_trip::<v1::SessionListCapabilities, v2::SessionListCapabilities>(
+            caps.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::SessionListCapabilities, v2::SessionListCapabilities>(
+            caps,
+        );
+    }
+
+    /// Guards the fix in #1227 which loosened `additionalDirectories`
+    /// semantics for session/list. The conversion must preserve the
+    /// full ordered list through v1 -> v2 -> v1.
+    #[cfg(feature = "unstable_session_additional_directories")]
+    #[test]
+    fn round_trips_session_info_with_additional_directories() {
+        let info = v1::SessionInfo::new("sess_dir_1", "/workspace")
+            .additional_directories(vec![
+                std::path::PathBuf::from("/extra/one"),
+                std::path::PathBuf::from("/extra/two"),
+            ])
+            .title("With extras")
+            .updated_at("2026-05-17T00:00:00Z");
+        assert_v1_round_trip::<v1::SessionInfo, v2::SessionInfo>(info.clone());
+        assert_json_eq_after_v1_to_v2::<v1::SessionInfo, v2::SessionInfo>(info);
+
+        // Empty additional_directories must round-trip identically to
+        // "field omitted" — the fields' `skip_serializing_if =
+        // "Vec::is_empty"` attribute is the contract we need to hold.
+        let no_extras = v1::SessionInfo::new("sess_no_extras", "/workspace");
+        assert_v1_round_trip::<v1::SessionInfo, v2::SessionInfo>(no_extras.clone());
+        assert_json_eq_after_v1_to_v2::<v1::SessionInfo, v2::SessionInfo>(no_extras);
+    }
+
+    #[test]
+    fn round_trips_load_session_request_with_mcp_servers() {
+        let request = v1::LoadSessionRequest::new("sess_load_1", "/workspace").mcp_servers(vec![
+            v1::McpServer::Stdio(v1::McpServerStdio::new("local", "/usr/bin/mcp")),
+            v1::McpServer::Http(v1::McpServerHttp::new("remote", "https://example.com/mcp")),
+        ]);
+        assert_v1_round_trip::<v1::LoadSessionRequest, v2::LoadSessionRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LoadSessionRequest, v2::LoadSessionRequest>(request);
+    }
+
+    #[test]
+    fn round_trips_load_session_response_with_modes_and_config() {
+        let response = v1::LoadSessionResponse::default()
+            .modes(v1::SessionModeState::new(
+                "ask",
+                vec![
+                    v1::SessionMode::new("ask", "Ask").description("Answer questions"),
+                    v1::SessionMode::new("code", "Code"),
+                ],
+            ))
+            .config_options(vec![v1::SessionConfigOption::select(
+                "theme",
+                "Theme",
+                "dark",
+                vec![
+                    v1::SessionConfigSelectOption::new("dark", "Dark"),
+                    v1::SessionConfigSelectOption::new("light", "Light"),
+                ],
+            )]);
+
+        assert_v1_round_trip::<v1::LoadSessionResponse, v2::LoadSessionResponse>(response.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LoadSessionResponse, v2::LoadSessionResponse>(response);
+    }
+
+    #[test]
+    fn round_trips_resume_session_request_and_response() {
+        let request = v1::ResumeSessionRequest::new("sess_resume_1", "/workspace")
+            .mcp_servers(vec![v1::McpServer::Sse(v1::McpServerSse::new(
+                "events",
+                "https://example.com/sse",
+            ))]);
+        assert_v1_round_trip::<v1::ResumeSessionRequest, v2::ResumeSessionRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ResumeSessionRequest, v2::ResumeSessionRequest>(
+            request,
+        );
+
+        let response = v1::ResumeSessionResponse::new()
+            .modes(v1::SessionModeState::new(
+                "code",
+                vec![v1::SessionMode::new("code", "Code")],
+            ));
+        assert_v1_round_trip::<v1::ResumeSessionResponse, v2::ResumeSessionResponse>(
+            response.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::ResumeSessionResponse, v2::ResumeSessionResponse>(
+            response,
+        );
+    }
+
+    #[test]
+    fn round_trips_close_session_request_and_response() {
+        let request = v1::CloseSessionRequest::new("sess_close_1");
+        assert_v1_round_trip::<v1::CloseSessionRequest, v2::CloseSessionRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::CloseSessionRequest, v2::CloseSessionRequest>(request);
+
+        let response = v1::CloseSessionResponse::default();
+        assert_v1_round_trip::<v1::CloseSessionResponse, v2::CloseSessionResponse>(response.clone());
+        assert_json_eq_after_v1_to_v2::<v1::CloseSessionResponse, v2::CloseSessionResponse>(
+            response,
+        );
+    }
+
+    /// SessionInfoUpdate uses `MaybeUndefined` for `title` / `updated_at`
+    /// so that `null` (explicit clear) differs from "field absent". The
+    /// three-state semantics have to survive v1 <-> v2 conversion — if
+    /// they collapse to two-state, agents will silently stop being able
+    /// to clear a session's title.
+    #[test]
+    fn round_trips_session_info_update_null_and_undefined_titles() {
+        use crate::serde_util::MaybeUndefined;
+
+        let undefined = v1::SessionInfoUpdate::new();
+        assert_v1_round_trip::<v1::SessionInfoUpdate, v2::SessionInfoUpdate>(undefined.clone());
+        assert_json_eq_after_v1_to_v2::<v1::SessionInfoUpdate, v2::SessionInfoUpdate>(undefined);
+
+        let explicit_null = v1::SessionInfoUpdate {
+            title: MaybeUndefined::Null,
+            updated_at: MaybeUndefined::Null,
+            meta: None,
+        };
+        assert_v1_round_trip::<v1::SessionInfoUpdate, v2::SessionInfoUpdate>(explicit_null.clone());
+        assert_json_eq_after_v1_to_v2::<v1::SessionInfoUpdate, v2::SessionInfoUpdate>(
+            explicit_null,
+        );
+
+        let with_values = v1::SessionInfoUpdate::new()
+            .title(Some("New title".to_string()))
+            .updated_at(Some("2026-05-01T00:00:00Z".to_string()));
+        assert_v1_round_trip::<v1::SessionInfoUpdate, v2::SessionInfoUpdate>(with_values.clone());
+        assert_json_eq_after_v1_to_v2::<v1::SessionInfoUpdate, v2::SessionInfoUpdate>(with_values);
+    }
 }
