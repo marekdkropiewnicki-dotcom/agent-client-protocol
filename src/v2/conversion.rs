@@ -10235,6 +10235,223 @@ mod tests {
         assert_v1_round_trip::<v1::Role, v2::Role>(v1::Role::User);
     }
 
+    // ------------------------------------------------------
+    // Enum-level routing tests.
+    //
+    // The top-level `ClientRequest`, `AgentRequest`, `ClientResponse`,
+    // `AgentResponse`, `ClientNotification`, and `AgentNotification`
+    // enums are the entry points for all v1<->v2 conversion. The
+    // Rust compiler already forces the match arms to be exhaustive,
+    // but that guarantees only that the code compiles — it does not
+    // guarantee the arms route to the correct inner type. Historically
+    // the copy/paste nature of the enum match arms has been a source of
+    // subtle bugs where variant A's data ends up wrapped in variant B.
+    //
+    // The tests below exhaustively construct one representative
+    // instance of every stable variant per enum, round-trip through
+    // v2, and assert JSON equality via serde. If a new variant is
+    // added without being included in a fixture list here, the test
+    // will still pass — but the reviewer's job is to notice the
+    // missing entry, and the test file becomes a living checklist of
+    // which enum variants are covered.
+    // ------------------------------------------------------
+
+    /// Assert that `value` survives a v1 -> v2 -> v1 round trip when
+    /// wrapped in a routing enum. The enums are `#[serde(untagged)]`
+    /// and lack `PartialEq`, so we compare their `serde_json::Value`
+    /// representation instead of the Rust value.
+    fn assert_enum_json_round_trip<T1, T2>(value: T1)
+    where
+        T1: IntoV2<Output = T2> + Clone + serde::Serialize,
+        T2: IntoV1<Output = T1> + serde::Serialize,
+    {
+        let before = serde_json::to_value(&value).expect("v1 serialize");
+        let as_v2 = v1_to_v2(value).expect("v1 -> v2 conversion");
+        let v2_json = serde_json::to_value(&as_v2).expect("v2 serialize");
+        assert_eq!(before, v2_json, "JSON drifted on v1 -> v2 for enum");
+        let back = v2_to_v1(as_v2).expect("v2 -> v1 conversion");
+        let after = serde_json::to_value(&back).expect("v1 serialize after round trip");
+        assert_eq!(before, after, "JSON drifted on v2 -> v1 for enum");
+    }
+
+    #[test]
+    fn client_request_variants_round_trip_through_routing_enum() {
+        let variants: Vec<v1::ClientRequest> = vec![
+            v1::ClientRequest::InitializeRequest(v1::InitializeRequest::new(ProtocolVersion::V1)),
+            v1::ClientRequest::AuthenticateRequest(v1::AuthenticateRequest::new("oauth")),
+            v1::ClientRequest::LogoutRequest(v1::LogoutRequest::new()),
+            v1::ClientRequest::NewSessionRequest(v1::NewSessionRequest::new("/workspace")),
+            v1::ClientRequest::LoadSessionRequest(v1::LoadSessionRequest::new(
+                "sess_load", "/workspace",
+            )),
+            v1::ClientRequest::ListSessionsRequest(v1::ListSessionsRequest::new()),
+            v1::ClientRequest::ResumeSessionRequest(v1::ResumeSessionRequest::new(
+                "sess_resume",
+                "/workspace",
+            )),
+            v1::ClientRequest::CloseSessionRequest(v1::CloseSessionRequest::new("sess_close")),
+            v1::ClientRequest::SetSessionModeRequest(v1::SetSessionModeRequest::new(
+                "sess_mode", "architect",
+            )),
+            v1::ClientRequest::PromptRequest(v1::PromptRequest::new(
+                "sess_prompt",
+                vec![v1::ContentBlock::Text(v1::TextContent::new("hi"))],
+            )),
+        ];
+
+        for variant in variants {
+            assert_enum_json_round_trip::<v1::ClientRequest, v2::ClientRequest>(variant);
+        }
+
+        #[cfg(feature = "unstable_session_delete")]
+        assert_enum_json_round_trip::<v1::ClientRequest, v2::ClientRequest>(
+            v1::ClientRequest::DeleteSessionRequest(v1::DeleteSessionRequest::new(
+                "sess_delete_routed",
+            )),
+        );
+
+        #[cfg(feature = "unstable_session_model")]
+        assert_enum_json_round_trip::<v1::ClientRequest, v2::ClientRequest>(
+            v1::ClientRequest::SetSessionModelRequest(v1::SetSessionModelRequest::new(
+                "sess_model_routed",
+                v1::ModelId::new("claude-opus"),
+            )),
+        );
+    }
+
+    #[test]
+    fn agent_request_variants_round_trip_through_routing_enum() {
+        let variants: Vec<v1::AgentRequest> = vec![
+            v1::AgentRequest::WriteTextFileRequest(v1::WriteTextFileRequest::new(
+                "sess_write_agentreq",
+                std::path::PathBuf::from("/workspace/x.txt"),
+                "content",
+            )),
+            v1::AgentRequest::ReadTextFileRequest(v1::ReadTextFileRequest::new(
+                "sess_read_agentreq",
+                std::path::PathBuf::from("/workspace/y.txt"),
+            )),
+            v1::AgentRequest::RequestPermissionRequest(v1::RequestPermissionRequest::new(
+                "sess_perm_agentreq",
+                v1::ToolCallUpdate::new(
+                    "tc_perm",
+                    v1::ToolCallUpdateFields::new().title("Edit file"),
+                ),
+                vec![v1::PermissionOption::new(
+                    "opt_yes",
+                    "Yes",
+                    v1::PermissionOptionKind::AllowOnce,
+                )],
+            )),
+            v1::AgentRequest::CreateTerminalRequest(v1::CreateTerminalRequest::new(
+                "sess_ct_agentreq",
+                "cargo",
+            )),
+            v1::AgentRequest::TerminalOutputRequest(v1::TerminalOutputRequest::new(
+                "sess_to_agentreq",
+                "term_1",
+            )),
+            v1::AgentRequest::ReleaseTerminalRequest(v1::ReleaseTerminalRequest::new(
+                "sess_rt_agentreq",
+                "term_1",
+            )),
+            v1::AgentRequest::WaitForTerminalExitRequest(v1::WaitForTerminalExitRequest::new(
+                "sess_wte_agentreq",
+                "term_1",
+            )),
+            v1::AgentRequest::KillTerminalRequest(v1::KillTerminalRequest::new(
+                "sess_kill_agentreq",
+                "term_1",
+            )),
+        ];
+
+        for variant in variants {
+            assert_enum_json_round_trip::<v1::AgentRequest, v2::AgentRequest>(variant);
+        }
+    }
+
+    #[test]
+    fn client_response_variants_round_trip_through_routing_enum() {
+        let variants: Vec<v1::ClientResponse> = vec![
+            v1::ClientResponse::WriteTextFileResponse(v1::WriteTextFileResponse::new()),
+            v1::ClientResponse::ReadTextFileResponse(v1::ReadTextFileResponse::new("body")),
+            v1::ClientResponse::RequestPermissionResponse(v1::RequestPermissionResponse::new(
+                v1::RequestPermissionOutcome::Cancelled,
+            )),
+            v1::ClientResponse::CreateTerminalResponse(v1::CreateTerminalResponse::new("term_1")),
+            v1::ClientResponse::TerminalOutputResponse(v1::TerminalOutputResponse::new(
+                "output", false,
+            )),
+            v1::ClientResponse::ReleaseTerminalResponse(v1::ReleaseTerminalResponse::new()),
+            v1::ClientResponse::WaitForTerminalExitResponse(v1::WaitForTerminalExitResponse::new(
+                v1::TerminalExitStatus::new().exit_code(0_u32),
+            )),
+            v1::ClientResponse::KillTerminalResponse(v1::KillTerminalResponse::new()),
+        ];
+
+        for variant in variants {
+            assert_enum_json_round_trip::<v1::ClientResponse, v2::ClientResponse>(variant);
+        }
+    }
+
+    #[test]
+    fn agent_response_variants_round_trip_through_routing_enum() {
+        let variants: Vec<v1::AgentResponse> = vec![
+            v1::AgentResponse::InitializeResponse(v1::InitializeResponse::new(ProtocolVersion::V1)),
+            v1::AgentResponse::AuthenticateResponse(v1::AuthenticateResponse::default()),
+            v1::AgentResponse::LogoutResponse(v1::LogoutResponse::new()),
+            v1::AgentResponse::NewSessionResponse(v1::NewSessionResponse::new("sess_new")),
+            v1::AgentResponse::LoadSessionResponse(v1::LoadSessionResponse::default()),
+            v1::AgentResponse::ListSessionsResponse(v1::ListSessionsResponse::new(vec![])),
+            v1::AgentResponse::ResumeSessionResponse(v1::ResumeSessionResponse::new()),
+            v1::AgentResponse::CloseSessionResponse(v1::CloseSessionResponse::default()),
+            v1::AgentResponse::SetSessionModeResponse(v1::SetSessionModeResponse::new()),
+            v1::AgentResponse::PromptResponse(v1::PromptResponse::new(v1::StopReason::EndTurn)),
+        ];
+
+        for variant in variants {
+            assert_enum_json_round_trip::<v1::AgentResponse, v2::AgentResponse>(variant);
+        }
+
+        #[cfg(feature = "unstable_session_delete")]
+        assert_enum_json_round_trip::<v1::AgentResponse, v2::AgentResponse>(
+            v1::AgentResponse::DeleteSessionResponse(v1::DeleteSessionResponse::new()),
+        );
+
+        #[cfg(feature = "unstable_session_model")]
+        assert_enum_json_round_trip::<v1::AgentResponse, v2::AgentResponse>(
+            v1::AgentResponse::SetSessionModelResponse(v1::SetSessionModelResponse::default()),
+        );
+    }
+
+    #[test]
+    fn client_notification_variants_round_trip_through_routing_enum() {
+        let variants: Vec<v1::ClientNotification> = vec![v1::ClientNotification::CancelNotification(
+            v1::CancelNotification::new("sess_notif_cancel"),
+        )];
+
+        for variant in variants {
+            assert_enum_json_round_trip::<v1::ClientNotification, v2::ClientNotification>(variant);
+        }
+    }
+
+    #[test]
+    fn agent_notification_variants_round_trip_through_routing_enum() {
+        let variants: Vec<v1::AgentNotification> =
+            vec![v1::AgentNotification::SessionNotification(
+                v1::SessionNotification::new(
+                    "sess_notif_update",
+                    v1::SessionUpdate::AgentMessageChunk(v1::ContentChunk::new(
+                        v1::ContentBlock::Text(v1::TextContent::new("chunk")),
+                    )),
+                ),
+            )];
+
+        for variant in variants {
+            assert_enum_json_round_trip::<v1::AgentNotification, v2::AgentNotification>(variant);
+        }
+    }
+
     /// Grouped select options serialize as an untagged enum variant
     /// distinct from ungrouped options. Round-trip tests protect the
     /// serde ordering because `#[serde(untagged)]` will silently accept
