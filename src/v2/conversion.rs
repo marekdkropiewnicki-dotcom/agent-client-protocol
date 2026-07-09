@@ -9582,4 +9582,57 @@ mod tests {
             unsupported,
         );
     }
+
+    // ------------------------------------------------------
+    // Session delete (added under `unstable_session_delete`).
+    // ------------------------------------------------------
+
+    #[cfg(feature = "unstable_session_delete")]
+    #[test]
+    fn round_trips_delete_session_request_with_meta() {
+        let request = v1::DeleteSessionRequest::new("sess_delete_1").meta(
+            serde_json::Map::from_iter([("reason".to_string(), serde_json::json!("user_asked"))]),
+        );
+
+        assert_v1_round_trip::<v1::DeleteSessionRequest, v2::DeleteSessionRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::DeleteSessionRequest, v2::DeleteSessionRequest>(
+            request,
+        );
+    }
+
+    #[cfg(feature = "unstable_session_delete")]
+    #[test]
+    fn round_trips_delete_session_response() {
+        let response_default = v1::DeleteSessionResponse::new();
+        assert_v1_round_trip::<v1::DeleteSessionResponse, v2::DeleteSessionResponse>(
+            response_default.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::DeleteSessionResponse, v2::DeleteSessionResponse>(
+            response_default,
+        );
+
+        let response_with_meta = v1::DeleteSessionResponse::new()
+            .meta(serde_json::Map::from_iter([(
+                "count".to_string(),
+                serde_json::json!(1),
+            )]));
+        assert_v1_round_trip::<v1::DeleteSessionResponse, v2::DeleteSessionResponse>(
+            response_with_meta.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::DeleteSessionResponse, v2::DeleteSessionResponse>(
+            response_with_meta,
+        );
+    }
+
+    #[cfg(feature = "unstable_session_delete")]
+    #[test]
+    fn round_trips_session_delete_capabilities() {
+        let caps = v1::SessionDeleteCapabilities::new();
+        assert_v1_round_trip::<v1::SessionDeleteCapabilities, v2::SessionDeleteCapabilities>(
+            caps.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::SessionDeleteCapabilities, v2::SessionDeleteCapabilities>(
+            caps,
+        );
+    }
 }
