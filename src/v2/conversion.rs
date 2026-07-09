@@ -9513,4 +9513,73 @@ mod tests {
             ))
         );
     }
+
+    // ---------------------------------------------------------------
+    // Regression tests for recently stabilized / added functionality.
+    //
+    // The v1↔v2 conversion module has ~500 hand-written `impl` blocks
+    // but historically only a handful of them are exercised by tests.
+    // The suites below lock down conversions for the types most likely
+    // to drift silently — either because they were just added, because
+    // they were recently modified, or because they carry non-trivial
+    // routing responsibilities at the enum boundary.
+    // ---------------------------------------------------------------
+
+    // -----------------------------
+    // Logout (stabilized in #1273).
+    // -----------------------------
+
+    #[test]
+    fn round_trips_logout_request_with_meta() {
+        let request = v1::LogoutRequest::new()
+            .meta(serde_json::Map::from_iter([(
+                "trace_id".to_string(),
+                serde_json::json!("abc-123"),
+            )]));
+
+        assert_v1_round_trip::<v1::LogoutRequest, v2::LogoutRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LogoutRequest, v2::LogoutRequest>(request);
+    }
+
+    #[test]
+    fn round_trips_logout_response_with_meta() {
+        let response = v1::LogoutResponse::new()
+            .meta(serde_json::Map::from_iter([(
+                "elapsed_ms".to_string(),
+                serde_json::json!(12),
+            )]));
+
+        assert_v1_round_trip::<v1::LogoutResponse, v2::LogoutResponse>(response.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LogoutResponse, v2::LogoutResponse>(response);
+    }
+
+    #[test]
+    fn round_trips_logout_and_agent_auth_capabilities() {
+        // The `AgentAuthCapabilities.logout = Some(LogoutCapabilities)`
+        // pattern is what agents use to advertise stabilized logout
+        // support, so this pair guards the wire representation clients
+        // rely on for capability negotiation.
+        let logout = v1::LogoutCapabilities::new();
+        assert_v1_round_trip::<v1::LogoutCapabilities, v2::LogoutCapabilities>(logout.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LogoutCapabilities, v2::LogoutCapabilities>(logout);
+
+        let auth_caps = v1::AgentAuthCapabilities::new().logout(v1::LogoutCapabilities::new());
+        assert_v1_round_trip::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
+            auth_caps.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
+            auth_caps,
+        );
+
+        // Absent logout support must also round-trip cleanly — this
+        // catches the trap where an `Option<T>` is preserved on one side
+        // but collapsed to `Some(default)` on the other.
+        let unsupported = v1::AgentAuthCapabilities::new();
+        assert_v1_round_trip::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
+            unsupported.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
+            unsupported,
+        );
+    }
 }
