@@ -9531,11 +9531,10 @@ mod tests {
 
     #[test]
     fn round_trips_logout_request_with_meta() {
-        let request = v1::LogoutRequest::new()
-            .meta(serde_json::Map::from_iter([(
-                "trace_id".to_string(),
-                serde_json::json!("abc-123"),
-            )]));
+        let request = v1::LogoutRequest::new().meta(serde_json::Map::from_iter([(
+            "trace_id".to_string(),
+            serde_json::json!("abc-123"),
+        )]));
 
         assert_v1_round_trip::<v1::LogoutRequest, v2::LogoutRequest>(request.clone());
         assert_json_eq_after_v1_to_v2::<v1::LogoutRequest, v2::LogoutRequest>(request);
@@ -9543,11 +9542,10 @@ mod tests {
 
     #[test]
     fn round_trips_logout_response_with_meta() {
-        let response = v1::LogoutResponse::new()
-            .meta(serde_json::Map::from_iter([(
-                "elapsed_ms".to_string(),
-                serde_json::json!(12),
-            )]));
+        let response = v1::LogoutResponse::new().meta(serde_json::Map::from_iter([(
+            "elapsed_ms".to_string(),
+            serde_json::json!(12),
+        )]));
 
         assert_v1_round_trip::<v1::LogoutResponse, v2::LogoutResponse>(response.clone());
         assert_json_eq_after_v1_to_v2::<v1::LogoutResponse, v2::LogoutResponse>(response);
@@ -9611,11 +9609,9 @@ mod tests {
             response_default,
         );
 
-        let response_with_meta = v1::DeleteSessionResponse::new()
-            .meta(serde_json::Map::from_iter([(
-                "count".to_string(),
-                serde_json::json!(1),
-            )]));
+        let response_with_meta = v1::DeleteSessionResponse::new().meta(serde_json::Map::from_iter(
+            [("count".to_string(), serde_json::json!(1))],
+        ));
         assert_v1_round_trip::<v1::DeleteSessionResponse, v2::DeleteSessionResponse>(
             response_with_meta.clone(),
         );
@@ -9673,7 +9669,9 @@ mod tests {
         ];
 
         let response = v1::ListSessionsResponse::new(sessions).next_cursor("next-cursor");
-        assert_v1_round_trip::<v1::ListSessionsResponse, v2::ListSessionsResponse>(response.clone());
+        assert_v1_round_trip::<v1::ListSessionsResponse, v2::ListSessionsResponse>(
+            response.clone(),
+        );
         assert_json_eq_after_v1_to_v2::<v1::ListSessionsResponse, v2::ListSessionsResponse>(
             response,
         );
@@ -9758,21 +9756,19 @@ mod tests {
 
     #[test]
     fn round_trips_resume_session_request_and_response() {
-        let request = v1::ResumeSessionRequest::new("sess_resume_1", "/workspace")
-            .mcp_servers(vec![v1::McpServer::Sse(v1::McpServerSse::new(
-                "events",
-                "https://example.com/sse",
-            ))]);
+        let request =
+            v1::ResumeSessionRequest::new("sess_resume_1", "/workspace").mcp_servers(vec![
+                v1::McpServer::Sse(v1::McpServerSse::new("events", "https://example.com/sse")),
+            ]);
         assert_v1_round_trip::<v1::ResumeSessionRequest, v2::ResumeSessionRequest>(request.clone());
         assert_json_eq_after_v1_to_v2::<v1::ResumeSessionRequest, v2::ResumeSessionRequest>(
             request,
         );
 
-        let response = v1::ResumeSessionResponse::new()
-            .modes(v1::SessionModeState::new(
-                "code",
-                vec![v1::SessionMode::new("code", "Code")],
-            ));
+        let response = v1::ResumeSessionResponse::new().modes(v1::SessionModeState::new(
+            "code",
+            vec![v1::SessionMode::new("code", "Code")],
+        ));
         assert_v1_round_trip::<v1::ResumeSessionResponse, v2::ResumeSessionResponse>(
             response.clone(),
         );
@@ -9788,7 +9784,9 @@ mod tests {
         assert_json_eq_after_v1_to_v2::<v1::CloseSessionRequest, v2::CloseSessionRequest>(request);
 
         let response = v1::CloseSessionResponse::default();
-        assert_v1_round_trip::<v1::CloseSessionResponse, v2::CloseSessionResponse>(response.clone());
+        assert_v1_round_trip::<v1::CloseSessionResponse, v2::CloseSessionResponse>(
+            response.clone(),
+        );
         assert_json_eq_after_v1_to_v2::<v1::CloseSessionResponse, v2::CloseSessionResponse>(
             response,
         );
@@ -9906,8 +9904,7 @@ mod tests {
         // variant compiles to a different `value` field type behind the
         // `unstable_boolean_config` feature gate.
         #[cfg(not(feature = "unstable_boolean_config"))]
-        let request =
-            v1::SetSessionConfigOptionRequest::new("sess_cfg_1", "theme", "dark");
+        let request = v1::SetSessionConfigOptionRequest::new("sess_cfg_1", "theme", "dark");
         #[cfg(feature = "unstable_boolean_config")]
         let request = v1::SetSessionConfigOptionRequest::new(
             "sess_cfg_1",
@@ -9937,9 +9934,10 @@ mod tests {
                 "appearance".to_string(),
             )),
         ]);
-        assert_v1_round_trip::<v1::SetSessionConfigOptionResponse, v2::SetSessionConfigOptionResponse>(
-            response.clone(),
-        );
+        assert_v1_round_trip::<
+            v1::SetSessionConfigOptionResponse,
+            v2::SetSessionConfigOptionResponse,
+        >(response.clone());
         assert_json_eq_after_v1_to_v2::<
             v1::SetSessionConfigOptionResponse,
             v2::SetSessionConfigOptionResponse,
@@ -10059,9 +10057,7 @@ mod tests {
         let signaled = v1::TerminalOutputResponse {
             output: String::new(),
             truncated: false,
-            exit_status: Some(
-                v1::TerminalExitStatus::new().signal("SIGTERM".to_string()),
-            ),
+            exit_status: Some(v1::TerminalExitStatus::new().signal("SIGTERM".to_string())),
             meta: None,
         };
         assert_v1_round_trip::<v1::TerminalOutputResponse, v2::TerminalOutputResponse>(
@@ -10086,9 +10082,8 @@ mod tests {
         // The response uses #[serde(flatten)] over TerminalExitStatus,
         // so its JSON shape is subtly different from ordinary
         // struct-in-struct nesting.
-        let response = v1::WaitForTerminalExitResponse::new(
-            v1::TerminalExitStatus::new().exit_code(2_u32),
-        );
+        let response =
+            v1::WaitForTerminalExitResponse::new(v1::TerminalExitStatus::new().exit_code(2_u32));
         assert_v1_round_trip::<v1::WaitForTerminalExitResponse, v2::WaitForTerminalExitResponse>(
             response.clone(),
         );
@@ -10121,7 +10116,9 @@ mod tests {
         assert_json_eq_after_v1_to_v2::<v1::KillTerminalRequest, v2::KillTerminalRequest>(kill_req);
 
         let kill_resp = v1::KillTerminalResponse::new();
-        assert_v1_round_trip::<v1::KillTerminalResponse, v2::KillTerminalResponse>(kill_resp.clone());
+        assert_v1_round_trip::<v1::KillTerminalResponse, v2::KillTerminalResponse>(
+            kill_resp.clone(),
+        );
         assert_json_eq_after_v1_to_v2::<v1::KillTerminalResponse, v2::KillTerminalResponse>(
             kill_resp,
         );
@@ -10175,7 +10172,9 @@ mod tests {
         assert_json_eq_after_v1_to_v2::<v1::ReadTextFileRequest, v2::ReadTextFileRequest>(whole);
 
         let response = v1::ReadTextFileResponse::new("file contents");
-        assert_v1_round_trip::<v1::ReadTextFileResponse, v2::ReadTextFileResponse>(response.clone());
+        assert_v1_round_trip::<v1::ReadTextFileResponse, v2::ReadTextFileResponse>(
+            response.clone(),
+        );
         assert_json_eq_after_v1_to_v2::<v1::ReadTextFileResponse, v2::ReadTextFileResponse>(
             response,
         );
@@ -10195,7 +10194,9 @@ mod tests {
         assert_json_eq_after_v1_to_v2::<v1::AuthenticateRequest, v2::AuthenticateRequest>(request);
 
         let response = v1::AuthenticateResponse::default();
-        assert_v1_round_trip::<v1::AuthenticateResponse, v2::AuthenticateResponse>(response.clone());
+        assert_v1_round_trip::<v1::AuthenticateResponse, v2::AuthenticateResponse>(
+            response.clone(),
+        );
         assert_json_eq_after_v1_to_v2::<v1::AuthenticateResponse, v2::AuthenticateResponse>(
             response,
         );
@@ -10204,7 +10205,9 @@ mod tests {
     #[test]
     fn round_trips_cancel_notification() {
         let notification = v1::CancelNotification::new("sess_cancel_1");
-        assert_v1_round_trip::<v1::CancelNotification, v2::CancelNotification>(notification.clone());
+        assert_v1_round_trip::<v1::CancelNotification, v2::CancelNotification>(
+            notification.clone(),
+        );
         assert_json_eq_after_v1_to_v2::<v1::CancelNotification, v2::CancelNotification>(
             notification,
         );
@@ -10224,9 +10227,9 @@ mod tests {
                 serde_json::json!("tool_output"),
             )]));
 
-        let block = v1::ContentBlock::Text(v1::TextContent::new("annotated").annotations(
-            annotations.clone(),
-        ));
+        let block = v1::ContentBlock::Text(
+            v1::TextContent::new("annotated").annotations(annotations.clone()),
+        );
         assert_v1_round_trip::<v1::ContentBlock, v2::ContentBlock>(block.clone());
         assert_json_eq_after_v1_to_v2::<v1::ContentBlock, v2::ContentBlock>(block);
 
@@ -10282,7 +10285,8 @@ mod tests {
             v1::ClientRequest::LogoutRequest(v1::LogoutRequest::new()),
             v1::ClientRequest::NewSessionRequest(v1::NewSessionRequest::new("/workspace")),
             v1::ClientRequest::LoadSessionRequest(v1::LoadSessionRequest::new(
-                "sess_load", "/workspace",
+                "sess_load",
+                "/workspace",
             )),
             v1::ClientRequest::ListSessionsRequest(v1::ListSessionsRequest::new()),
             v1::ClientRequest::ResumeSessionRequest(v1::ResumeSessionRequest::new(
@@ -10291,7 +10295,8 @@ mod tests {
             )),
             v1::ClientRequest::CloseSessionRequest(v1::CloseSessionRequest::new("sess_close")),
             v1::ClientRequest::SetSessionModeRequest(v1::SetSessionModeRequest::new(
-                "sess_mode", "architect",
+                "sess_mode",
+                "architect",
             )),
             v1::ClientRequest::PromptRequest(v1::PromptRequest::new(
                 "sess_prompt",
@@ -10426,9 +10431,10 @@ mod tests {
 
     #[test]
     fn client_notification_variants_round_trip_through_routing_enum() {
-        let variants: Vec<v1::ClientNotification> = vec![v1::ClientNotification::CancelNotification(
-            v1::CancelNotification::new("sess_notif_cancel"),
-        )];
+        let variants: Vec<v1::ClientNotification> =
+            vec![v1::ClientNotification::CancelNotification(
+                v1::CancelNotification::new("sess_notif_cancel"),
+            )];
 
         for variant in variants {
             assert_enum_json_round_trip::<v1::ClientNotification, v2::ClientNotification>(variant);
@@ -10458,38 +10464,38 @@ mod tests {
     /// the wrong variant if the shape drifts.
     #[test]
     fn round_trips_grouped_session_config_options() {
-        let response = v1::SetSessionConfigOptionResponse::new(vec![v1::SessionConfigOption::new(
-            "model",
-            "Model",
-            v1::SessionConfigKind::Select(v1::SessionConfigSelect::new(
-                "anthropic/claude-opus",
-                vec![
-                    v1::SessionConfigSelectGroup::new(
-                        "anthropic",
-                        "Anthropic",
-                        vec![
-                            v1::SessionConfigSelectOption::new(
-                                "anthropic/claude-opus",
-                                "Opus",
-                            ),
-                            v1::SessionConfigSelectOption::new(
-                                "anthropic/claude-sonnet",
-                                "Sonnet",
-                            ),
-                        ],
-                    ),
-                    v1::SessionConfigSelectGroup::new(
-                        "openai",
-                        "OpenAI",
-                        vec![v1::SessionConfigSelectOption::new("openai/gpt-5", "GPT-5")],
-                    ),
-                ],
-            )),
-        )
-        .category(v1::SessionConfigOptionCategory::Model)]);
-        assert_v1_round_trip::<v1::SetSessionConfigOptionResponse, v2::SetSessionConfigOptionResponse>(
-            response.clone(),
-        );
+        let response = v1::SetSessionConfigOptionResponse::new(vec![
+            v1::SessionConfigOption::new(
+                "model",
+                "Model",
+                v1::SessionConfigKind::Select(v1::SessionConfigSelect::new(
+                    "anthropic/claude-opus",
+                    vec![
+                        v1::SessionConfigSelectGroup::new(
+                            "anthropic",
+                            "Anthropic",
+                            vec![
+                                v1::SessionConfigSelectOption::new("anthropic/claude-opus", "Opus"),
+                                v1::SessionConfigSelectOption::new(
+                                    "anthropic/claude-sonnet",
+                                    "Sonnet",
+                                ),
+                            ],
+                        ),
+                        v1::SessionConfigSelectGroup::new(
+                            "openai",
+                            "OpenAI",
+                            vec![v1::SessionConfigSelectOption::new("openai/gpt-5", "GPT-5")],
+                        ),
+                    ],
+                )),
+            )
+            .category(v1::SessionConfigOptionCategory::Model),
+        ]);
+        assert_v1_round_trip::<
+            v1::SetSessionConfigOptionResponse,
+            v2::SetSessionConfigOptionResponse,
+        >(response.clone());
         assert_json_eq_after_v1_to_v2::<
             v1::SetSessionConfigOptionResponse,
             v2::SetSessionConfigOptionResponse,
