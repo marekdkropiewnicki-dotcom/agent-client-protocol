@@ -188,6 +188,166 @@ mod tests {
     }
 
     #[test]
+    fn request_round_trips_with_none_params() {
+        // `params` is `Option<Params>`. Deserializing a request that omits
+        // `params` entirely must succeed and produce `None`, which is how
+        // notification-style requests arrive on the wire.
+        let parsed: Request<ClientNotification> = serde_json::from_value(json!({
+            "id": 7,
+            "method": "cancel",
+        }))
+        .unwrap();
+        assert_eq!(parsed.id, RequestId::Number(7));
+        assert_eq!(&*parsed.method, "cancel");
+        assert!(parsed.params.is_none());
+
+        // Re-serializing the same value must keep the id and method intact.
+        let reserialized = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(reserialized["id"], json!(7));
+        assert_eq!(reserialized["method"], json!("cancel"));
+    }
+
+    #[test]
+    fn notification_round_trips_with_none_params() {
+        // Same contract as `Request`: omitted `params` deserializes to `None`.
+        let parsed: Notification<ClientNotification> = serde_json::from_value(json!({
+            "method": "cancel",
+        }))
+        .unwrap();
+        assert_eq!(&*parsed.method, "cancel");
+        assert!(parsed.params.is_none());
+
+        let reserialized = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(reserialized["method"], json!("cancel"));
+    }
+
+    #[test]
+    fn response_new_constructs_result_for_ok() {
+        let response: Response<i32, String> = Response::new(RequestId::Number(1), Ok(42));
+        match response {
+            Response::Result { id, result } => {
+                assert_eq!(id, RequestId::Number(1));
+                assert_eq!(result, 42);
+            }
+            Response::Error { .. } => panic!("expected Result variant"),
+        }
+    }
+
+    #[test]
+    fn response_new_constructs_error_for_err() {
+        let response: Response<i32, String> =
+            Response::new(RequestId::Str("abc".into()), Err("boom".to_owned()));
+        match response {
+            Response::Error { id, error } => {
+                assert_eq!(id, RequestId::Str("abc".into()));
+                assert_eq!(error, "boom");
+            }
+            Response::Result { .. } => panic!("expected Error variant"),
+        }
+    }
+
+    #[test]
+    fn response_untagged_deserialization_picks_result_or_error() {
+        // A response with a `result` field should deserialize into `Result`.
+        let success: Response<serde_json::Value, serde_json::Value> =
+            serde_json::from_value(json!({
+                "id": 1,
+                "result": {"ok": true},
+            }))
+            .unwrap();
+        match success {
+            Response::Result { id, result } => {
+                assert_eq!(id, RequestId::Number(1));
+                assert_eq!(result, json!({"ok": true}));
+            }
+            Response::Error { .. } => panic!("expected Result variant"),
+        }
+
+        // A response with an `error` field should deserialize into `Error`.
+        let failure: Response<serde_json::Value, serde_json::Value> =
+            serde_json::from_value(json!({
+                "id": "req-2",
+                "error": {"code": -32601, "message": "Method not found"},
+            }))
+            .unwrap();
+        match failure {
+            Response::Error { id, error } => {
+                assert_eq!(id, RequestId::Str("req-2".into()));
+                assert_eq!(
+                    error,
+                    json!({"code": -32601, "message": "Method not found"})
+                );
+            }
+            Response::Result { .. } => panic!("expected Error variant"),
+        }
+    }
+
+    #[test]
+    fn jsonrpc_message_round_trips_through_json() {
+        // Build a JsonRpcMessage by parsing the canonical wire form so the
+        // test does not depend on whether `params` is emitted as omitted vs.
+        // explicit `null` (both are valid per JSON-RPC 2.0).
+        let parsed: JsonRpcMessage<Notification<ClientNotification>> =
+            serde_json::from_value(json!({
+                "jsonrpc": "2.0",
+                "method": "ping",
+            }))
+            .unwrap();
+        let inner = parsed.into_inner();
+        assert_eq!(&*inner.method, "ping");
+        assert!(inner.params.is_none());
+
+        // Round-trip: serializing a wrapped notification must keep the
+        // jsonrpc + method fields exactly as produced.
+        let outgoing = JsonRpcMessage::wrap(Notification::<ClientNotification> {
+            method: "ping".into(),
+            params: None,
+        });
+        let serialized = serde_json::to_value(&outgoing).unwrap();
+        assert_eq!(serialized["jsonrpc"], json!("2.0"));
+        assert_eq!(serialized["method"], json!("ping"));
+    }
+
+    #[test]
+    fn jsonrpc_message_rejects_wrong_or_missing_version() {
+        // Missing the required `jsonrpc` field.
+        let missing: Result<JsonRpcMessage<Notification<ClientNotification>>, _> =
+            serde_json::from_value(json!({
+                "method": "ping",
+            }));
+        assert!(
+            missing.is_err(),
+            "JsonRpcMessage must require a jsonrpc field"
+        );
+
+        // Wrong version string.
+        let wrong: Result<JsonRpcMessage<Notification<ClientNotification>>, _> =
+            serde_json::from_value(json!({
+                "jsonrpc": "1.0",
+                "method": "ping",
+            }));
+        assert!(
+            wrong.is_err(),
+            "JsonRpcMessage must reject any jsonrpc value other than 2.0"
+        );
+    }
+
+    #[test]
+    fn request_id_orders_variants_consistently() {
+        // The derived `Ord` for the untagged enum follows declaration order:
+        // Null < Number < Str. This is relied upon when ids are used as map
+        // keys or sorted for stable output.
+        assert!(RequestId::Null < RequestId::Number(0));
+        assert!(RequestId::Number(i64::MAX) < RequestId::Str(String::new()));
+
+        // Within the Number variant, ordering follows the numeric value.
+        assert!(RequestId::Number(-5) < RequestId::Number(5));
+
+        // Within the Str variant, ordering follows lexicographic order.
+        assert!(RequestId::Str("a".into()) < RequestId::Str("b".into()));
+    }
+
+    #[test]
     fn notification_wire_format() {
         // Test client -> agent notification wire format
         let outgoing_msg = JsonRpcMessage::wrap(Notification {

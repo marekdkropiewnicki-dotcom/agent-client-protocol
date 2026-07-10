@@ -370,4 +370,136 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn error_code_debug_includes_numeric_value_and_name() {
+        // ErrorCode's `Debug` impl is non-derived and intentionally shows
+        // `<i32>: <display>` so that logs surface the wire code alongside the
+        // human-readable name. This is exercised by every error log.
+        assert_eq!(
+            format!("{:?}", ErrorCode::MethodNotFound),
+            "-32601: Method not found"
+        );
+        assert_eq!(
+            format!("{:?}", ErrorCode::InvalidParams),
+            "-32602: Invalid params"
+        );
+        assert_eq!(format!("{:?}", ErrorCode::Other(42)), "42: Unknown error");
+    }
+
+    #[test]
+    fn error_display_uses_code_when_message_is_empty() {
+        let err = Error {
+            code: ErrorCode::InternalError,
+            message: String::new(),
+            data: None,
+        };
+
+        assert_eq!(err.to_string(), "-32603");
+    }
+
+    #[test]
+    fn error_display_uses_message_when_present() {
+        let err = Error::new(-32000, "something went wrong");
+        assert_eq!(err.to_string(), "something went wrong");
+    }
+
+    #[test]
+    fn error_display_appends_pretty_data_when_present() {
+        let err =
+            Error::new(-32002, "Resource not found").data(serde_json::json!({"uri": "file:///x"}));
+
+        let rendered = err.to_string();
+        assert!(
+            rendered.starts_with("Resource not found: "),
+            "expected message prefix, got: {rendered}",
+        );
+        assert!(
+            rendered.contains("\"uri\""),
+            "expected uri key, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("\"file:///x\""),
+            "expected uri value, got: {rendered}",
+        );
+    }
+
+    #[test]
+    fn error_data_builder_overrides_with_none() {
+        let err = Error::internal_error().data("first attempt").data(None);
+        assert!(err.data.is_none());
+    }
+
+    #[test]
+    fn error_data_builder_replaces_previous_value() {
+        let err = Error::internal_error()
+            .data("first")
+            .data(serde_json::json!({"final": true}));
+        assert_eq!(err.data, Some(serde_json::json!({"final": true})));
+    }
+
+    #[test]
+    fn resource_not_found_attaches_uri_when_provided() {
+        let err = Error::resource_not_found(Some("file:///etc/hosts".into()));
+        assert_eq!(err.code, ErrorCode::ResourceNotFound);
+        assert_eq!(
+            err.data,
+            Some(serde_json::json!({"uri": "file:///etc/hosts"}))
+        );
+    }
+
+    #[test]
+    fn resource_not_found_omits_data_when_no_uri_given() {
+        let err = Error::resource_not_found(None);
+        assert_eq!(err.code, ErrorCode::ResourceNotFound);
+        assert!(err.data.is_none());
+    }
+
+    #[test]
+    fn error_skip_serializing_none_omits_data_field() {
+        let err = Error::new(-32601, "Method not found");
+        let serialized = serde_json::to_value(&err).unwrap();
+        assert_eq!(serialized.get("data"), None);
+        assert_eq!(serialized["code"], serde_json::json!(-32601));
+        assert_eq!(serialized["message"], serde_json::json!("Method not found"));
+    }
+
+    #[test]
+    fn from_serde_json_error_maps_to_invalid_params_with_message() {
+        let json_err: serde_json::Error =
+            serde_json::from_str::<u8>("\"not a number\"").unwrap_err();
+        let original_message = json_err.to_string();
+
+        let err: Error = json_err.into();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        assert_eq!(err.data, Some(serde_json::json!(original_message)));
+    }
+
+    #[test]
+    fn from_anyhow_error_preserves_protocol_error_via_downcast() {
+        let typed = Error::auth_required().data(serde_json::json!({"realm": "acme"}));
+        let wrapped: anyhow::Error = anyhow::Error::new(typed.clone());
+
+        let round_tripped: Error = wrapped.into();
+        assert_eq!(round_tripped, typed);
+    }
+
+    #[test]
+    fn from_anyhow_error_falls_back_to_internal_error_for_other_types() {
+        #[derive(Debug)]
+        struct Boom;
+
+        impl std::fmt::Display for Boom {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("kaboom")
+            }
+        }
+
+        impl std::error::Error for Boom {}
+
+        let wrapped = anyhow::Error::new(Boom);
+        let err: Error = wrapped.into();
+        assert_eq!(err.code, ErrorCode::InternalError);
+        assert_eq!(err.data, Some(serde_json::json!("kaboom")));
+    }
 }
