@@ -132,4 +132,82 @@ mod tests {
         let version: ProtocolVersion = serde_json::from_str(json).unwrap();
         assert_eq!(version, ProtocolVersion::new(65535));
     }
+
+    /// Negative numbers are not valid u16 versions and must be rejected
+    /// rather than silently coerced or accepted as a string.
+    #[test]
+    fn test_deserialize_negative_number_rejected() {
+        let result: Result<ProtocolVersion, _> = serde_json::from_str("-1");
+        assert!(
+            result.is_err(),
+            "negative protocol version must be rejected"
+        );
+    }
+
+    /// Floats are not valid versions; a regression that accepted `1.0` would
+    /// silently round-trip through `visit_u64` after truncation.
+    #[test]
+    fn test_deserialize_float_rejected() {
+        let result: Result<ProtocolVersion, _> = serde_json::from_str("1.5");
+        assert!(
+            result.is_err(),
+            "fractional protocol version must be rejected"
+        );
+    }
+
+    /// Invariant: `LATEST` is `V1` until v2 stabilizes. Bumping `LATEST`
+    /// without a coordinated release is a breaking change for every
+    /// consumer that caches the value, so make it visible in tests.
+    #[test]
+    fn latest_is_v1() {
+        assert_eq!(ProtocolVersion::LATEST, ProtocolVersion::V1);
+        assert_eq!(ProtocolVersion::LATEST, ProtocolVersion::new(1));
+    }
+
+    /// Pin the `Serialize` contract — protocol versions go on the wire as a
+    /// JSON integer, never a string. The asymmetric Deserialize impl
+    /// (which folds strings down to V0) makes the Serialize side easy to
+    /// regress accidentally.
+    #[test]
+    fn serializes_as_integer() {
+        let v = serde_json::to_value(ProtocolVersion::V1).unwrap();
+        assert!(v.is_number(), "expected integer, got {v}");
+        assert_eq!(v, serde_json::json!(1));
+
+        let v = serde_json::to_value(ProtocolVersion::V0).unwrap();
+        assert_eq!(v, serde_json::json!(0));
+
+        // Round trip number → ProtocolVersion → number.
+        let v: ProtocolVersion = serde_json::from_value(serde_json::json!(7)).unwrap();
+        assert_eq!(serde_json::to_value(v).unwrap(), serde_json::json!(7));
+    }
+
+    /// Versions are monotonically ordered by their integer value; the
+    /// negotiation logic in higher-level crates relies on this so we pin
+    /// it here.
+    #[test]
+    fn ordering_is_numeric() {
+        assert!(ProtocolVersion::V0 < ProtocolVersion::V1);
+        assert!(ProtocolVersion::new(1) < ProtocolVersion::new(2));
+        assert_eq!(ProtocolVersion::V1, ProtocolVersion::new(1));
+
+        // Min/max selection works as expected.
+        let max = std::cmp::max(ProtocolVersion::V1, ProtocolVersion::V0);
+        assert_eq!(max, ProtocolVersion::V1);
+    }
+
+    #[test]
+    fn display_renders_inner_number() {
+        assert_eq!(ProtocolVersion::V0.to_string(), "0");
+        assert_eq!(ProtocolVersion::V1.to_string(), "1");
+        assert_eq!(ProtocolVersion::new(42).to_string(), "42");
+    }
+
+    /// `From<u16>` is part of the public API thanks to `derive_more::From`
+    /// — verify it still constructs the same value `new` produces.
+    #[test]
+    fn from_u16_constructs_same_value() {
+        let v: ProtocolVersion = 5u16.into();
+        assert_eq!(v, ProtocolVersion::new(5));
+    }
 }

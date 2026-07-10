@@ -370,4 +370,232 @@ mod tests {
             );
         }
     }
+
+    /// Pin the wire-level integer codes so an accidental rename or reorder of
+    /// `ErrorCode` variants cannot silently change values shipped to clients.
+    #[test]
+    fn error_code_to_i32_pins_wire_values() {
+        assert_eq!(i32::from(ErrorCode::ParseError), -32700);
+        assert_eq!(i32::from(ErrorCode::InvalidRequest), -32600);
+        assert_eq!(i32::from(ErrorCode::MethodNotFound), -32601);
+        assert_eq!(i32::from(ErrorCode::InvalidParams), -32602);
+        assert_eq!(i32::from(ErrorCode::InternalError), -32603);
+        assert_eq!(i32::from(ErrorCode::AuthRequired), -32000);
+        assert_eq!(i32::from(ErrorCode::ResourceNotFound), -32002);
+        assert_eq!(i32::from(ErrorCode::Other(123)), 123);
+        assert_eq!(i32::from(ErrorCode::Other(-99999)), -99999);
+    }
+
+    /// Round-trip every reserved code through `i32 -> ErrorCode -> i32` and
+    /// confirm an unknown code falls through to `Other(_)` rather than being
+    /// remapped to a known variant.
+    #[test]
+    fn error_code_from_i32_roundtrips_known_codes_and_falls_back_to_other() {
+        let known = [
+            (-32700, ErrorCode::ParseError),
+            (-32600, ErrorCode::InvalidRequest),
+            (-32601, ErrorCode::MethodNotFound),
+            (-32602, ErrorCode::InvalidParams),
+            (-32603, ErrorCode::InternalError),
+            (-32000, ErrorCode::AuthRequired),
+            (-32002, ErrorCode::ResourceNotFound),
+        ];
+        for (code, variant) in known {
+            assert_eq!(ErrorCode::from(code), variant, "from({code})");
+            assert_eq!(i32::from(variant), code, "to({variant})");
+        }
+
+        // Unknown values must fall through to `Other` (not silently remapped).
+        for code in [-32699, -32001, -32003, -1, 0, 1, 42, i32::MAX, i32::MIN] {
+            assert_eq!(ErrorCode::from(code), ErrorCode::Other(code));
+        }
+    }
+
+    #[test]
+    fn error_code_debug_includes_numeric_value() {
+        assert_eq!(
+            format!("{:?}", ErrorCode::ParseError),
+            "-32700: Parse error"
+        );
+        assert_eq!(
+            format!("{:?}", ErrorCode::AuthRequired),
+            "-32000: Authentication required"
+        );
+        assert_eq!(format!("{:?}", ErrorCode::Other(7)), "7: Unknown error");
+    }
+
+    /// `Error::new` accepts arbitrary i32 codes (so callers can use unknown
+    /// codes received from the wire) and starts with `data: None`.
+    #[test]
+    fn error_new_preserves_arbitrary_code_and_message() {
+        let err = Error::new(-12345, "boom");
+        assert_eq!(err.code, ErrorCode::Other(-12345));
+        assert_eq!(err.message, "boom");
+        assert!(err.data.is_none());
+
+        // Known codes get normalized into named variants.
+        let err = Error::new(-32601, "missing");
+        assert_eq!(err.code, ErrorCode::MethodNotFound);
+    }
+
+    /// Each builder helper must map to its documented `ErrorCode` and carry
+    /// the corresponding strum display string as its message.
+    #[test]
+    fn error_builders_use_canonical_code_and_message() {
+        let cases: &[(Error, ErrorCode, &str)] = &[
+            (Error::parse_error(), ErrorCode::ParseError, "Parse error"),
+            (
+                Error::invalid_request(),
+                ErrorCode::InvalidRequest,
+                "Invalid request",
+            ),
+            (
+                Error::method_not_found(),
+                ErrorCode::MethodNotFound,
+                "Method not found",
+            ),
+            (
+                Error::invalid_params(),
+                ErrorCode::InvalidParams,
+                "Invalid params",
+            ),
+            (
+                Error::internal_error(),
+                ErrorCode::InternalError,
+                "Internal error",
+            ),
+            (
+                Error::auth_required(),
+                ErrorCode::AuthRequired,
+                "Authentication required",
+            ),
+        ];
+        for (err, code, msg) in cases {
+            assert_eq!(&err.code, code);
+            assert_eq!(&err.message, msg);
+            assert!(err.data.is_none());
+        }
+    }
+
+    /// `resource_not_found` must encode the URI as `{ "uri": uri }` so
+    /// downstream consumers can rely on this shape.
+    #[test]
+    fn resource_not_found_data_shape() {
+        let none = Error::resource_not_found(None);
+        assert_eq!(none.code, ErrorCode::ResourceNotFound);
+        assert!(none.data.is_none());
+
+        let with_uri = Error::resource_not_found(Some("file:///tmp/x".into()));
+        assert_eq!(with_uri.code, ErrorCode::ResourceNotFound);
+        assert_eq!(
+            with_uri.data,
+            Some(serde_json::json!({ "uri": "file:///tmp/x" }))
+        );
+    }
+
+    #[test]
+    fn error_data_is_chainable_and_overrides() {
+        let err = Error::internal_error()
+            .data(serde_json::json!({"first": true}))
+            .data(serde_json::json!({"second": true}));
+        assert_eq!(err.data, Some(serde_json::json!({"second": true})));
+
+        // `IntoOption` lets callers pass the value bare or wrapped in `Some`.
+        let bare = Error::internal_error().data("hello");
+        let wrapped = Error::internal_error().data(Some(serde_json::Value::from("hello")));
+        assert_eq!(bare.data, wrapped.data);
+    }
+
+    #[test]
+    fn into_internal_error_attaches_string_representation() {
+        #[derive(Debug)]
+        struct MyErr;
+        impl std::fmt::Display for MyErr {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "boom")
+            }
+        }
+        impl std::error::Error for MyErr {}
+
+        let err = Error::into_internal_error(MyErr);
+        assert_eq!(err.code, ErrorCode::InternalError);
+        assert_eq!(err.data, Some(serde_json::Value::from("boom")));
+    }
+
+    /// Display falls back to the numeric code when the message is empty,
+    /// otherwise prints the message; pretty-printed data is appended after a
+    /// `: ` separator.
+    #[test]
+    fn error_display_handles_empty_message_and_data() {
+        let with_msg = Error::method_not_found();
+        assert_eq!(with_msg.to_string(), "Method not found");
+
+        let blank = Error::new(-32603, "");
+        assert_eq!(blank.to_string(), "-32603");
+
+        let with_data = Error::internal_error().data(serde_json::json!({"k": 1}));
+        let rendered = with_data.to_string();
+        assert!(rendered.starts_with("Internal error: "), "{rendered}");
+        assert!(rendered.contains("\"k\": 1"), "{rendered}");
+    }
+
+    /// Wire format must remain exactly `{ code, message, data? }` (data is
+    /// skipped when None).
+    #[test]
+    fn error_serializes_to_expected_json_rpc_shape() {
+        let err = Error::auth_required();
+        assert_eq!(
+            serde_json::to_value(&err).unwrap(),
+            serde_json::json!({
+                "code": -32000,
+                "message": "Authentication required",
+            })
+        );
+
+        let with_data = Error::resource_not_found(Some("u".into()));
+        assert_eq!(
+            serde_json::to_value(&with_data).unwrap(),
+            serde_json::json!({
+                "code": -32002,
+                "message": "Resource not found",
+                "data": { "uri": "u" },
+            })
+        );
+
+        // `data: null` deserializes to `Some(Value::Null)` (serde default for
+        // `Option<Value>`); wire absence must not be confused with explicit
+        // null in tests that round-trip the type.
+        let parsed: Error = serde_json::from_value(serde_json::json!({
+            "code": -32601,
+            "message": "Method not found",
+        }))
+        .unwrap();
+        assert_eq!(parsed.code, ErrorCode::MethodNotFound);
+        assert!(parsed.data.is_none());
+    }
+
+    #[test]
+    fn from_serde_json_error_produces_invalid_params() {
+        let json_err = serde_json::from_str::<i32>("not-a-number").unwrap_err();
+        let msg = json_err.to_string();
+        let err: Error = json_err.into();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        assert_eq!(err.data, Some(serde_json::Value::from(msg)));
+    }
+
+    #[test]
+    fn from_anyhow_downcasts_existing_error() {
+        let original = Error::auth_required().data(serde_json::json!({"why": "no token"}));
+        let anyhow_err: anyhow::Error = anyhow::Error::new(original.clone());
+        let recovered: Error = anyhow_err.into();
+        assert_eq!(recovered, original);
+    }
+
+    #[test]
+    fn from_anyhow_wraps_unknown_error_as_internal() {
+        let anyhow_err = anyhow::anyhow!("kaboom");
+        let err: Error = anyhow_err.into();
+        assert_eq!(err.code, ErrorCode::InternalError);
+        assert_eq!(err.data, Some(serde_json::Value::from("kaboom")));
+    }
 }

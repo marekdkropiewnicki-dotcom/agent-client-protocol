@@ -822,4 +822,150 @@ mod tests {
         value = MaybeUndefined::Value(Err("error"));
         assert_eq!(value.transpose(), Err("error"));
     }
+
+    /// `is_*` / `value()` / `take()` are the only safe accessors for
+    /// `MaybeUndefined` and are heavily used by builder code; pin every arm.
+    #[test]
+    fn maybe_undefined_state_predicates_and_accessors() {
+        let undef = MaybeUndefined::<i32>::Undefined;
+        assert!(undef.is_undefined());
+        assert!(!undef.is_null());
+        assert!(!undef.is_value());
+        assert_eq!(undef.value(), None);
+        assert_eq!(undef.take(), None);
+
+        let null = MaybeUndefined::<i32>::Null;
+        assert!(!null.is_undefined());
+        assert!(null.is_null());
+        assert!(!null.is_value());
+        assert_eq!(null.value(), None);
+        assert_eq!(null.take(), None);
+
+        let val = MaybeUndefined::Value(7);
+        assert!(!val.is_undefined());
+        assert!(!val.is_null());
+        assert!(val.is_value());
+        assert_eq!(val.value(), Some(&7));
+        assert_eq!(val.take(), Some(7));
+    }
+
+    /// `From<Option<Option<T>>>` must perfectly invert the
+    /// `Into<Option<Option<T>>>` impl already covered by
+    /// `test_maybe_undefined_to_nested_option`.
+    #[test]
+    fn maybe_undefined_from_nested_option_round_trip() {
+        for original in [
+            MaybeUndefined::<i32>::Undefined,
+            MaybeUndefined::Null,
+            MaybeUndefined::Value(42),
+        ] {
+            let nested: Option<Option<i32>> = original.into();
+            let back: MaybeUndefined<i32> = nested.into();
+            assert_eq!(back, original);
+        }
+    }
+
+    /// Default for `MaybeUndefined<T>` must be `Undefined` so that
+    /// `#[serde(default)]` on optional fields produces "absent" rather
+    /// than "null" — the two states must stay distinguishable.
+    #[test]
+    fn maybe_undefined_default_is_undefined() {
+        let v: MaybeUndefined<i32> = MaybeUndefined::default();
+        assert!(v.is_undefined());
+    }
+
+    /// `update_to` was previously only covered by a doctest; pin the
+    /// behavior (especially the no-op Undefined branch) directly.
+    #[test]
+    fn maybe_undefined_update_to_branches() {
+        let mut target: Option<i32> = Some(10);
+
+        // Undefined leaves the existing value untouched.
+        MaybeUndefined::<i32>::Undefined.update_to(&mut target);
+        assert_eq!(target, Some(10));
+
+        // Value overrides.
+        MaybeUndefined::Value(99).update_to(&mut target);
+        assert_eq!(target, Some(99));
+
+        // Null clears.
+        MaybeUndefined::<i32>::Null.update_to(&mut target);
+        assert_eq!(target, None);
+
+        // Undefined still no-ops on a None target.
+        MaybeUndefined::<i32>::Undefined.update_to(&mut target);
+        assert_eq!(target, None);
+    }
+
+    /// `IntoOption` powers builder ergonomics across the entire crate
+    /// (e.g. `.data("hello")` and `.data(Some(...))` must produce the
+    /// same result). Pin the most-used impls so a regression in one
+    /// would cause the wrong builder shape to compile silently.
+    #[test]
+    fn into_option_covers_common_string_inputs() {
+        // T -> Option<T>
+        assert_eq!(IntoOption::<i32>::into_option(7), Some(7));
+
+        // Option<T> -> Option<T>
+        let some: Option<String> = Some("a".into());
+        assert_eq!(IntoOption::<String>::into_option(some), Some("a".into()));
+        let none: Option<String> = None;
+        assert_eq!(IntoOption::<String>::into_option(none), None);
+
+        // &str / &String / Cow / Box<str> / Arc<str> -> Option<String>
+        assert_eq!(
+            IntoOption::<String>::into_option("a"),
+            Some("a".to_string())
+        );
+        let s = String::from("b");
+        assert_eq!(IntoOption::<String>::into_option(&s), Some("b".into()));
+        let cow: Cow<'_, str> = Cow::Borrowed("c");
+        assert_eq!(IntoOption::<String>::into_option(cow), Some("c".into()));
+        let boxed: Box<str> = Box::from("d");
+        assert_eq!(IntoOption::<String>::into_option(boxed), Some("d".into()));
+        let arc: Arc<str> = Arc::from("e");
+        assert_eq!(IntoOption::<String>::into_option(arc), Some("e".into()));
+
+        // &T (AsRef<OsStr>) -> Option<PathBuf>
+        let path = "/tmp/x";
+        assert_eq!(
+            IntoOption::<PathBuf>::into_option(path),
+            Some(PathBuf::from("/tmp/x"))
+        );
+
+        // &str -> Option<serde_json::Value> coerces to JSON string
+        assert_eq!(
+            IntoOption::<serde_json::Value>::into_option("a"),
+            Some(serde_json::Value::from("a"))
+        );
+    }
+
+    /// `IntoMaybeUndefined` mirrors `IntoOption` for builders that need to
+    /// distinguish `null` from "leave unchanged". Pin the three core
+    /// shapes: bare T → Value, `Some(T)` → Value, `None` → Null,
+    /// and `MaybeUndefined::Undefined` is preserved as-is.
+    #[test]
+    fn into_maybe_undefined_distinguishes_null_from_undefined() {
+        // Bare value.
+        let v = IntoMaybeUndefined::<i32>::into_maybe_undefined(5);
+        assert_eq!(v, MaybeUndefined::Value(5));
+
+        // Some(T) -> Value.
+        let v = IntoMaybeUndefined::<i32>::into_maybe_undefined(Some(5));
+        assert_eq!(v, MaybeUndefined::Value(5));
+
+        // None -> Null (NOT Undefined — important contract).
+        let v = IntoMaybeUndefined::<i32>::into_maybe_undefined(Option::<i32>::None);
+        assert_eq!(v, MaybeUndefined::Null);
+
+        // Undefined stays Undefined.
+        let v = IntoMaybeUndefined::<i32>::into_maybe_undefined(MaybeUndefined::Undefined);
+        assert_eq!(v, MaybeUndefined::Undefined);
+
+        // String passthroughs.
+        assert_eq!(
+            IntoMaybeUndefined::<String>::into_maybe_undefined("a"),
+            MaybeUndefined::Value("a".into())
+        );
+    }
 }
