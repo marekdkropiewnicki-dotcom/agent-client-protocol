@@ -250,4 +250,150 @@ mod tests {
             })
         );
     }
+
+    /// `wrap` then `into_inner` must hand back a structurally identical
+    /// inner message. This is the contract every transport in the wild
+    /// relies on to peel the JSON-RPC envelope off before dispatching.
+    #[test]
+    fn wrap_then_into_inner_round_trips() {
+        let inner = Notification::<String> {
+            method: "ping".into(),
+            params: Some("hello".to_string()),
+        };
+        let wrapped = JsonRpcMessage::wrap(inner);
+        let unwrapped = wrapped.into_inner();
+        assert_eq!(&*unwrapped.method, "ping");
+        assert_eq!(unwrapped.params.as_deref(), Some("hello"));
+    }
+
+    /// JSON-RPC 2.0 mandates the literal string `"2.0"` for the
+    /// `jsonrpc` field. Anything else (including the older `"1.0"`,
+    /// numbers, or omission entirely) must be rejected — peers that
+    /// send the wrong value are not speaking the same protocol.
+    #[test]
+    fn rejects_messages_with_wrong_jsonrpc_version() {
+        // Missing entirely.
+        let result: Result<JsonRpcMessage<Notification<String>>, _> =
+            serde_json::from_value(json!({
+                "method": "ping"
+            }));
+        assert!(result.is_err(), "missing jsonrpc must fail");
+
+        // Wrong literal.
+        let result: Result<JsonRpcMessage<Notification<String>>, _> =
+            serde_json::from_value(json!({
+                "jsonrpc": "1.0",
+                "method": "ping"
+            }));
+        assert!(result.is_err(), "jsonrpc=1.0 must be rejected");
+
+        // Numeric — many naive implementations send 2.0 as a float.
+        let result: Result<JsonRpcMessage<Notification<String>>, _> =
+            serde_json::from_value(json!({
+                "jsonrpc": 2.0,
+                "method": "ping"
+            }));
+        assert!(result.is_err(), "numeric jsonrpc must be rejected");
+    }
+
+    /// `JsonRpcMessage::wrap` must produce JSON whose top-level shape is
+    /// `{"jsonrpc": "2.0", ...flattened-message...}`. Inner fields are
+    /// flattened, not nested under a key, because that's how peers parse
+    /// the envelope. The `jsonrpc` literal must always be `"2.0"`.
+    #[test]
+    fn wrap_flattens_inner_message_into_envelope() {
+        let params = ClientNotification::CancelNotification(CancelNotification {
+            session_id: SessionId("s1".into()),
+            meta: None,
+        });
+        let inner = Notification {
+            method: "cancel".into(),
+            params: Some(params),
+        };
+        let wrapped = JsonRpcMessage::wrap(inner);
+        let serialized = serde_json::to_value(&wrapped).unwrap();
+        // jsonrpc is at the top level alongside the flattened message
+        // fields; nothing nests the original Notification under a key.
+        assert_eq!(serialized.get("jsonrpc"), Some(&json!("2.0")));
+        assert_eq!(serialized.get("method"), Some(&json!("cancel")));
+        assert!(
+            serialized.get("params").is_some(),
+            "params must be flattened into the envelope, not nested"
+        );
+    }
+
+    /// `Response::new` is the central place where successful results
+    /// turn into wire `result` payloads and `Err`s turn into `error`
+    /// payloads. Both branches must carry the request id through
+    /// faithfully so the peer can correlate the response.
+    #[test]
+    fn response_new_correlates_id_for_both_ok_and_err() {
+        let ok: Response<i32, String> = Response::new(42i64, Ok::<_, String>(7));
+        match ok {
+            Response::Result { id, result } => {
+                assert_eq!(id, RequestId::Number(42));
+                assert_eq!(result, 7);
+            }
+            Response::Error { .. } => panic!("Ok must produce Result variant"),
+        }
+
+        let err: Response<i32, String> =
+            Response::new("req-1".to_string(), Err::<i32, _>("nope".to_string()));
+        match err {
+            Response::Error { id, error } => {
+                assert_eq!(id, RequestId::Str("req-1".to_string()));
+                assert_eq!(error, "nope");
+            }
+            Response::Result { .. } => panic!("Err must produce Error variant"),
+        }
+    }
+
+    /// `RequestId::From<i64>` and `From<String>` are the documented
+    /// ergonomic constructors. Lock them in so we don't accidentally
+    /// remove them when tweaking the derive surface.
+    #[test]
+    fn request_id_from_conversions_pick_the_right_variant() {
+        let n: RequestId = 7i64.into();
+        assert_eq!(n, RequestId::Number(7));
+
+        let s: RequestId = "abc".to_string().into();
+        assert_eq!(s, RequestId::Str("abc".to_string()));
+    }
+
+    /// `Notification<Params>` must not emit an `id` field — the presence
+    /// of `id` is what distinguishes a request from a notification per
+    /// the JSON-RPC spec. Without this guard, accidentally adding an `id`
+    /// field would silently change every notification into a
+    /// request-shaped message.
+    #[test]
+    fn notification_has_no_id_field() {
+        let note = Notification {
+            method: "cancel".into(),
+            params: Some(ClientNotification::CancelNotification(CancelNotification {
+                session_id: SessionId("s".into()),
+                meta: None,
+            })),
+        };
+        let json = serde_json::to_value(&note).unwrap();
+        assert!(json.get("id").is_none(), "notifications must not carry id");
+        assert_eq!(json.get("method"), Some(&json!("cancel")));
+    }
+
+    /// Round-trip a request through JSON: the deserialized value must
+    /// match what we sent. Catches regressions where someone changes the
+    /// envelope shape and breaks deserialization. Uses `String` params
+    /// to avoid the `()` unit-type quirk in serde.
+    #[test]
+    fn request_round_trips_through_json() {
+        let req = Request::<String> {
+            id: RequestId::Number(7),
+            method: "ping".into(),
+            params: Some("payload".to_string()),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        let back: Request<String> = serde_json::from_value(json).unwrap();
+        assert_eq!(back.id, req.id);
+        assert_eq!(back.method, req.method);
+        assert_eq!(back.params, req.params);
+    }
 }
