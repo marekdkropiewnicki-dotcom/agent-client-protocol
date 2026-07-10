@@ -9513,4 +9513,992 @@ mod tests {
             ))
         );
     }
+
+    // ---------------------------------------------------------------
+    // Regression tests for recently stabilized / added functionality.
+    //
+    // The v1↔v2 conversion module has ~500 hand-written `impl` blocks
+    // but historically only a handful of them are exercised by tests.
+    // The suites below lock down conversions for the types most likely
+    // to drift silently — either because they were just added, because
+    // they were recently modified, or because they carry non-trivial
+    // routing responsibilities at the enum boundary.
+    // ---------------------------------------------------------------
+
+    // -----------------------------
+    // Logout (stabilized in #1273).
+    // -----------------------------
+
+    #[test]
+    fn round_trips_logout_request_with_meta() {
+        let request = v1::LogoutRequest::new().meta(serde_json::Map::from_iter([(
+            "trace_id".to_string(),
+            serde_json::json!("abc-123"),
+        )]));
+
+        assert_v1_round_trip::<v1::LogoutRequest, v2::LogoutRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LogoutRequest, v2::LogoutRequest>(request);
+    }
+
+    #[test]
+    fn round_trips_logout_response_with_meta() {
+        let response = v1::LogoutResponse::new().meta(serde_json::Map::from_iter([(
+            "elapsed_ms".to_string(),
+            serde_json::json!(12),
+        )]));
+
+        assert_v1_round_trip::<v1::LogoutResponse, v2::LogoutResponse>(response.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LogoutResponse, v2::LogoutResponse>(response);
+    }
+
+    #[test]
+    fn round_trips_logout_and_agent_auth_capabilities() {
+        // The `AgentAuthCapabilities.logout = Some(LogoutCapabilities)`
+        // pattern is what agents use to advertise stabilized logout
+        // support, so this pair guards the wire representation clients
+        // rely on for capability negotiation.
+        let logout = v1::LogoutCapabilities::new();
+        assert_v1_round_trip::<v1::LogoutCapabilities, v2::LogoutCapabilities>(logout.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LogoutCapabilities, v2::LogoutCapabilities>(logout);
+
+        let auth_caps = v1::AgentAuthCapabilities::new().logout(v1::LogoutCapabilities::new());
+        assert_v1_round_trip::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
+            auth_caps.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
+            auth_caps,
+        );
+
+        // Absent logout support must also round-trip cleanly — this
+        // catches the trap where an `Option<T>` is preserved on one side
+        // but collapsed to `Some(default)` on the other.
+        let unsupported = v1::AgentAuthCapabilities::new();
+        assert_v1_round_trip::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
+            unsupported.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(
+            unsupported,
+        );
+    }
+
+    // ------------------------------------------------------
+    // Session delete (added under `unstable_session_delete`).
+    // ------------------------------------------------------
+
+    #[cfg(feature = "unstable_session_delete")]
+    #[test]
+    fn round_trips_delete_session_request_with_meta() {
+        let request = v1::DeleteSessionRequest::new("sess_delete_1").meta(
+            serde_json::Map::from_iter([("reason".to_string(), serde_json::json!("user_asked"))]),
+        );
+
+        assert_v1_round_trip::<v1::DeleteSessionRequest, v2::DeleteSessionRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::DeleteSessionRequest, v2::DeleteSessionRequest>(
+            request,
+        );
+    }
+
+    #[cfg(feature = "unstable_session_delete")]
+    #[test]
+    fn round_trips_delete_session_response() {
+        let response_default = v1::DeleteSessionResponse::new();
+        assert_v1_round_trip::<v1::DeleteSessionResponse, v2::DeleteSessionResponse>(
+            response_default.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::DeleteSessionResponse, v2::DeleteSessionResponse>(
+            response_default,
+        );
+
+        let response_with_meta = v1::DeleteSessionResponse::new().meta(serde_json::Map::from_iter(
+            [("count".to_string(), serde_json::json!(1))],
+        ));
+        assert_v1_round_trip::<v1::DeleteSessionResponse, v2::DeleteSessionResponse>(
+            response_with_meta.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::DeleteSessionResponse, v2::DeleteSessionResponse>(
+            response_with_meta,
+        );
+    }
+
+    #[cfg(feature = "unstable_session_delete")]
+    #[test]
+    fn round_trips_session_delete_capabilities() {
+        let caps = v1::SessionDeleteCapabilities::new();
+        assert_v1_round_trip::<v1::SessionDeleteCapabilities, v2::SessionDeleteCapabilities>(
+            caps.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::SessionDeleteCapabilities, v2::SessionDeleteCapabilities>(
+            caps,
+        );
+    }
+
+    // ---------------------------------------------------
+    // session/list, session/load, session/resume, close, and
+    // supporting SessionInfo/SessionInfoUpdate types.
+    // ---------------------------------------------------
+
+    #[test]
+    fn round_trips_list_sessions_request_variants() {
+        // Empty (default) request — the important edge case is the
+        // (Option<PathBuf>, Option<String>) pair both being `None`.
+        let empty = v1::ListSessionsRequest::new();
+        assert_v1_round_trip::<v1::ListSessionsRequest, v2::ListSessionsRequest>(empty.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ListSessionsRequest, v2::ListSessionsRequest>(empty);
+
+        // Fully populated: cwd + pagination cursor + meta.
+        let populated = v1::ListSessionsRequest::new()
+            .cwd(std::path::PathBuf::from("/workspace"))
+            .cursor("cursor-token-abc")
+            .meta(serde_json::Map::from_iter([(
+                "trace".to_string(),
+                serde_json::json!("req-1"),
+            )]));
+        assert_v1_round_trip::<v1::ListSessionsRequest, v2::ListSessionsRequest>(populated.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ListSessionsRequest, v2::ListSessionsRequest>(
+            populated,
+        );
+    }
+
+    #[test]
+    fn round_trips_list_sessions_response_with_pagination() {
+        let sessions = vec![
+            v1::SessionInfo::new("sess_a", "/w/a").title("Session A"),
+            v1::SessionInfo::new("sess_b", "/w/b")
+                .title("Session B")
+                .updated_at("2026-05-01T00:00:00Z"),
+        ];
+
+        let response = v1::ListSessionsResponse::new(sessions).next_cursor("next-cursor");
+        assert_v1_round_trip::<v1::ListSessionsResponse, v2::ListSessionsResponse>(
+            response.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::ListSessionsResponse, v2::ListSessionsResponse>(
+            response,
+        );
+
+        // Terminal page: empty sessions, absent cursor.
+        let empty = v1::ListSessionsResponse::new(vec![]);
+        assert_v1_round_trip::<v1::ListSessionsResponse, v2::ListSessionsResponse>(empty.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ListSessionsResponse, v2::ListSessionsResponse>(empty);
+    }
+
+    #[test]
+    fn round_trips_session_list_capabilities() {
+        let caps = v1::SessionListCapabilities::new().meta(serde_json::Map::from_iter([(
+            "supports_paging".to_string(),
+            serde_json::json!(true),
+        )]));
+        assert_v1_round_trip::<v1::SessionListCapabilities, v2::SessionListCapabilities>(
+            caps.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::SessionListCapabilities, v2::SessionListCapabilities>(
+            caps,
+        );
+    }
+
+    /// Guards the fix in #1227 which loosened `additionalDirectories`
+    /// semantics for session/list. The conversion must preserve the
+    /// full ordered list through v1 -> v2 -> v1.
+    #[cfg(feature = "unstable_session_additional_directories")]
+    #[test]
+    fn round_trips_session_info_with_additional_directories() {
+        let info = v1::SessionInfo::new("sess_dir_1", "/workspace")
+            .additional_directories(vec![
+                std::path::PathBuf::from("/extra/one"),
+                std::path::PathBuf::from("/extra/two"),
+            ])
+            .title("With extras")
+            .updated_at("2026-05-17T00:00:00Z");
+        assert_v1_round_trip::<v1::SessionInfo, v2::SessionInfo>(info.clone());
+        assert_json_eq_after_v1_to_v2::<v1::SessionInfo, v2::SessionInfo>(info);
+
+        // Empty additional_directories must round-trip identically to
+        // "field omitted" — the fields' `skip_serializing_if =
+        // "Vec::is_empty"` attribute is the contract we need to hold.
+        let no_extras = v1::SessionInfo::new("sess_no_extras", "/workspace");
+        assert_v1_round_trip::<v1::SessionInfo, v2::SessionInfo>(no_extras.clone());
+        assert_json_eq_after_v1_to_v2::<v1::SessionInfo, v2::SessionInfo>(no_extras);
+    }
+
+    #[test]
+    fn round_trips_load_session_request_with_mcp_servers() {
+        let request = v1::LoadSessionRequest::new("sess_load_1", "/workspace").mcp_servers(vec![
+            v1::McpServer::Stdio(v1::McpServerStdio::new("local", "/usr/bin/mcp")),
+            v1::McpServer::Http(v1::McpServerHttp::new("remote", "https://example.com/mcp")),
+        ]);
+        assert_v1_round_trip::<v1::LoadSessionRequest, v2::LoadSessionRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LoadSessionRequest, v2::LoadSessionRequest>(request);
+    }
+
+    #[test]
+    fn round_trips_load_session_response_with_modes_and_config() {
+        let response = v1::LoadSessionResponse::default()
+            .modes(v1::SessionModeState::new(
+                "ask",
+                vec![
+                    v1::SessionMode::new("ask", "Ask").description("Answer questions"),
+                    v1::SessionMode::new("code", "Code"),
+                ],
+            ))
+            .config_options(vec![v1::SessionConfigOption::select(
+                "theme",
+                "Theme",
+                "dark",
+                vec![
+                    v1::SessionConfigSelectOption::new("dark", "Dark"),
+                    v1::SessionConfigSelectOption::new("light", "Light"),
+                ],
+            )]);
+
+        assert_v1_round_trip::<v1::LoadSessionResponse, v2::LoadSessionResponse>(response.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LoadSessionResponse, v2::LoadSessionResponse>(response);
+    }
+
+    #[test]
+    fn round_trips_resume_session_request_and_response() {
+        let request =
+            v1::ResumeSessionRequest::new("sess_resume_1", "/workspace").mcp_servers(vec![
+                v1::McpServer::Sse(v1::McpServerSse::new("events", "https://example.com/sse")),
+            ]);
+        assert_v1_round_trip::<v1::ResumeSessionRequest, v2::ResumeSessionRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ResumeSessionRequest, v2::ResumeSessionRequest>(
+            request,
+        );
+
+        let response = v1::ResumeSessionResponse::new().modes(v1::SessionModeState::new(
+            "code",
+            vec![v1::SessionMode::new("code", "Code")],
+        ));
+        assert_v1_round_trip::<v1::ResumeSessionResponse, v2::ResumeSessionResponse>(
+            response.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::ResumeSessionResponse, v2::ResumeSessionResponse>(
+            response,
+        );
+    }
+
+    #[test]
+    fn round_trips_close_session_request_and_response() {
+        let request = v1::CloseSessionRequest::new("sess_close_1");
+        assert_v1_round_trip::<v1::CloseSessionRequest, v2::CloseSessionRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::CloseSessionRequest, v2::CloseSessionRequest>(request);
+
+        let response = v1::CloseSessionResponse::default();
+        assert_v1_round_trip::<v1::CloseSessionResponse, v2::CloseSessionResponse>(
+            response.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::CloseSessionResponse, v2::CloseSessionResponse>(
+            response,
+        );
+    }
+
+    /// SessionInfoUpdate uses `MaybeUndefined` for `title` / `updated_at`
+    /// so that `null` (explicit clear) differs from "field absent". The
+    /// three-state semantics have to survive v1 <-> v2 conversion — if
+    /// they collapse to two-state, agents will silently stop being able
+    /// to clear a session's title.
+    #[test]
+    fn round_trips_session_info_update_null_and_undefined_titles() {
+        use crate::serde_util::MaybeUndefined;
+
+        let undefined = v1::SessionInfoUpdate::new();
+        assert_v1_round_trip::<v1::SessionInfoUpdate, v2::SessionInfoUpdate>(undefined.clone());
+        assert_json_eq_after_v1_to_v2::<v1::SessionInfoUpdate, v2::SessionInfoUpdate>(undefined);
+
+        let explicit_null = v1::SessionInfoUpdate {
+            title: MaybeUndefined::Null,
+            updated_at: MaybeUndefined::Null,
+            meta: None,
+        };
+        assert_v1_round_trip::<v1::SessionInfoUpdate, v2::SessionInfoUpdate>(explicit_null.clone());
+        assert_json_eq_after_v1_to_v2::<v1::SessionInfoUpdate, v2::SessionInfoUpdate>(
+            explicit_null,
+        );
+
+        let with_values = v1::SessionInfoUpdate::new()
+            .title(Some("New title".to_string()))
+            .updated_at(Some("2026-05-01T00:00:00Z".to_string()));
+        assert_v1_round_trip::<v1::SessionInfoUpdate, v2::SessionInfoUpdate>(with_values.clone());
+        assert_json_eq_after_v1_to_v2::<v1::SessionInfoUpdate, v2::SessionInfoUpdate>(with_values);
+    }
+
+    // ---------------------------------------------------
+    // Set-session-* method conversions and their supporting
+    // SessionModeState / SessionModelState / SessionConfigOption.
+    // ---------------------------------------------------
+
+    #[test]
+    fn round_trips_set_session_mode_request_and_response() {
+        let request = v1::SetSessionModeRequest::new("sess_mode_1", "architect").meta(
+            serde_json::Map::from_iter([("source".to_string(), serde_json::json!("hotkey"))]),
+        );
+        assert_v1_round_trip::<v1::SetSessionModeRequest, v2::SetSessionModeRequest>(
+            request.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::SetSessionModeRequest, v2::SetSessionModeRequest>(
+            request,
+        );
+
+        let response = v1::SetSessionModeResponse::new();
+        assert_v1_round_trip::<v1::SetSessionModeResponse, v2::SetSessionModeResponse>(
+            response.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::SetSessionModeResponse, v2::SetSessionModeResponse>(
+            response,
+        );
+    }
+
+    #[test]
+    fn round_trips_session_mode_state_with_descriptions() {
+        let state = v1::SessionModeState::new(
+            "ask",
+            vec![
+                v1::SessionMode::new("ask", "Ask").description("Answer questions only"),
+                v1::SessionMode::new("architect", "Architect"),
+                v1::SessionMode::new("code", "Code").description("Write code"),
+            ],
+        );
+        assert_v1_round_trip::<v1::SessionModeState, v2::SessionModeState>(state.clone());
+        assert_json_eq_after_v1_to_v2::<v1::SessionModeState, v2::SessionModeState>(state);
+    }
+
+    #[cfg(feature = "unstable_session_model")]
+    #[test]
+    fn round_trips_set_session_model_request_and_response() {
+        let request =
+            v1::SetSessionModelRequest::new("sess_model_1", v1::ModelId::new("claude-opus"));
+        assert_v1_round_trip::<v1::SetSessionModelRequest, v2::SetSessionModelRequest>(
+            request.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::SetSessionModelRequest, v2::SetSessionModelRequest>(
+            request,
+        );
+
+        let response = v1::SetSessionModelResponse::default();
+        assert_v1_round_trip::<v1::SetSessionModelResponse, v2::SetSessionModelResponse>(
+            response.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::SetSessionModelResponse, v2::SetSessionModelResponse>(
+            response,
+        );
+    }
+
+    #[cfg(feature = "unstable_session_model")]
+    #[test]
+    fn round_trips_session_model_state_with_multiple_models() {
+        let state = v1::SessionModelState::new(
+            v1::ModelId::new("claude-opus"),
+            vec![
+                v1::ModelInfo::new(v1::ModelId::new("claude-opus"), "Claude Opus")
+                    .description("Highest capability"),
+                v1::ModelInfo::new(v1::ModelId::new("claude-sonnet"), "Claude Sonnet"),
+            ],
+        );
+        assert_v1_round_trip::<v1::SessionModelState, v2::SessionModelState>(state.clone());
+        assert_json_eq_after_v1_to_v2::<v1::SessionModelState, v2::SessionModelState>(state);
+    }
+
+    #[test]
+    fn round_trips_set_session_config_option_request_and_response() {
+        // We only run the non-boolean path here because the boolean
+        // variant compiles to a different `value` field type behind the
+        // `unstable_boolean_config` feature gate.
+        #[cfg(not(feature = "unstable_boolean_config"))]
+        let request = v1::SetSessionConfigOptionRequest::new("sess_cfg_1", "theme", "dark");
+        #[cfg(feature = "unstable_boolean_config")]
+        let request = v1::SetSessionConfigOptionRequest::new(
+            "sess_cfg_1",
+            "theme",
+            v1::SessionConfigValueId::new("dark"),
+        );
+        assert_v1_round_trip::<v1::SetSessionConfigOptionRequest, v2::SetSessionConfigOptionRequest>(
+            request.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<
+            v1::SetSessionConfigOptionRequest,
+            v2::SetSessionConfigOptionRequest,
+        >(request);
+
+        let response = v1::SetSessionConfigOptionResponse::new(vec![
+            v1::SessionConfigOption::select(
+                "theme",
+                "Theme",
+                "dark",
+                vec![
+                    v1::SessionConfigSelectOption::new("dark", "Dark"),
+                    v1::SessionConfigSelectOption::new("light", "Light"),
+                ],
+            )
+            .description("Editor theme")
+            .category(v1::SessionConfigOptionCategory::Other(
+                "appearance".to_string(),
+            )),
+        ]);
+        assert_v1_round_trip::<
+            v1::SetSessionConfigOptionResponse,
+            v2::SetSessionConfigOptionResponse,
+        >(response.clone());
+        assert_json_eq_after_v1_to_v2::<
+            v1::SetSessionConfigOptionResponse,
+            v2::SetSessionConfigOptionResponse,
+        >(response);
+    }
+
+    // ------------------------------------------------------
+    // ContentBlock variants not previously covered.
+    // The existing `round_trips_prompt_request_with_content_variants`
+    // test only exercises Text / Image / ResourceLink. Audio,
+    // EmbeddedResource (both inner variants), and Annotations carry
+    // the largest per-variant conversion code, so they are the most
+    // likely places for a silent v1<->v2 drift.
+    // ------------------------------------------------------
+
+    #[test]
+    fn round_trips_audio_content_block() {
+        let block = v1::ContentBlock::Audio(
+            v1::AudioContent::new("base64-audio-data", "audio/wav")
+                .annotations(v1::Annotations::new().priority(0.7)),
+        );
+        assert_v1_round_trip::<v1::ContentBlock, v2::ContentBlock>(block.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ContentBlock, v2::ContentBlock>(block);
+    }
+
+    #[test]
+    fn round_trips_embedded_resource_text_variant() {
+        let block = v1::ContentBlock::Resource(v1::EmbeddedResource::new(
+            v1::EmbeddedResourceResource::TextResourceContents(
+                v1::TextResourceContents::new("hello", "file:///a.txt").mime_type("text/plain"),
+            ),
+        ));
+        assert_v1_round_trip::<v1::ContentBlock, v2::ContentBlock>(block.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ContentBlock, v2::ContentBlock>(block);
+    }
+
+    #[test]
+    fn round_trips_embedded_resource_blob_variant() {
+        // EmbeddedResourceResource is #[serde(untagged)], so exercising
+        // both variants matters: the wrong variant would be silently
+        // accepted at deserialize time.
+        let block = v1::ContentBlock::Resource(v1::EmbeddedResource::new(
+            v1::EmbeddedResourceResource::BlobResourceContents(
+                v1::BlobResourceContents::new("data==", "file:///a.bin")
+                    .mime_type("application/octet-stream"),
+            ),
+        ));
+        assert_v1_round_trip::<v1::ContentBlock, v2::ContentBlock>(block.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ContentBlock, v2::ContentBlock>(block);
+    }
+
+    // ------------------------------------------------------
+    // Terminal request/response types (stable but untested).
+    // The terminal surface is a common route for shell commands
+    // triggered inside a session, so a conversion drift here would
+    // break both output truncation semantics and exit-status
+    // reporting for every terminal-using integration.
+    // ------------------------------------------------------
+
+    #[test]
+    fn round_trips_create_terminal_request_full() {
+        let request = v1::CreateTerminalRequest::new("sess_term", "cargo")
+            .args(vec!["test".to_string(), "--all-features".to_string()])
+            .env(vec![
+                v1::EnvVariable::new("RUST_LOG", "info"),
+                v1::EnvVariable::new("CI", "1"),
+            ])
+            .cwd(std::path::PathBuf::from("/workspace"))
+            .output_byte_limit(64 * 1024_u64);
+        assert_v1_round_trip::<v1::CreateTerminalRequest, v2::CreateTerminalRequest>(
+            request.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::CreateTerminalRequest, v2::CreateTerminalRequest>(
+            request,
+        );
+    }
+
+    #[test]
+    fn round_trips_create_terminal_response() {
+        let response = v1::CreateTerminalResponse::new("term_1");
+        assert_v1_round_trip::<v1::CreateTerminalResponse, v2::CreateTerminalResponse>(
+            response.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::CreateTerminalResponse, v2::CreateTerminalResponse>(
+            response,
+        );
+    }
+
+    #[test]
+    fn round_trips_terminal_output_response_with_and_without_exit() {
+        // Running command: no exit_status.
+        let running = v1::TerminalOutputResponse::new("partial output", false);
+        assert_v1_round_trip::<v1::TerminalOutputResponse, v2::TerminalOutputResponse>(
+            running.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::TerminalOutputResponse, v2::TerminalOutputResponse>(
+            running,
+        );
+
+        // Truncated + exited normally.
+        let exited_ok = v1::TerminalOutputResponse {
+            output: "hello\n".to_string(),
+            truncated: true,
+            exit_status: Some(v1::TerminalExitStatus::new().exit_code(0_u32)),
+            meta: None,
+        };
+        assert_v1_round_trip::<v1::TerminalOutputResponse, v2::TerminalOutputResponse>(
+            exited_ok.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::TerminalOutputResponse, v2::TerminalOutputResponse>(
+            exited_ok,
+        );
+
+        // Terminated by signal (exit_code absent, signal present) —
+        // the two Option<T> fields make an easy place for a
+        // conversion typo to silently swap them.
+        let signaled = v1::TerminalOutputResponse {
+            output: String::new(),
+            truncated: false,
+            exit_status: Some(v1::TerminalExitStatus::new().signal("SIGTERM".to_string())),
+            meta: None,
+        };
+        assert_v1_round_trip::<v1::TerminalOutputResponse, v2::TerminalOutputResponse>(
+            signaled.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::TerminalOutputResponse, v2::TerminalOutputResponse>(
+            signaled,
+        );
+    }
+
+    #[test]
+    fn round_trips_wait_for_terminal_exit_request_and_response() {
+        let request = v1::WaitForTerminalExitRequest::new("sess_wait", "term_wait");
+        assert_v1_round_trip::<v1::WaitForTerminalExitRequest, v2::WaitForTerminalExitRequest>(
+            request.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<
+            v1::WaitForTerminalExitRequest,
+            v2::WaitForTerminalExitRequest,
+        >(request);
+
+        // The response uses #[serde(flatten)] over TerminalExitStatus,
+        // so its JSON shape is subtly different from ordinary
+        // struct-in-struct nesting.
+        let response =
+            v1::WaitForTerminalExitResponse::new(v1::TerminalExitStatus::new().exit_code(2_u32));
+        assert_v1_round_trip::<v1::WaitForTerminalExitResponse, v2::WaitForTerminalExitResponse>(
+            response.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<
+            v1::WaitForTerminalExitResponse,
+            v2::WaitForTerminalExitResponse,
+        >(response);
+    }
+
+    #[test]
+    fn round_trips_release_and_kill_terminal_requests_and_responses() {
+        let release_req = v1::ReleaseTerminalRequest::new("sess_rel", "term_rel");
+        assert_v1_round_trip::<v1::ReleaseTerminalRequest, v2::ReleaseTerminalRequest>(
+            release_req.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::ReleaseTerminalRequest, v2::ReleaseTerminalRequest>(
+            release_req,
+        );
+
+        let release_resp = v1::ReleaseTerminalResponse::new();
+        assert_v1_round_trip::<v1::ReleaseTerminalResponse, v2::ReleaseTerminalResponse>(
+            release_resp.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::ReleaseTerminalResponse, v2::ReleaseTerminalResponse>(
+            release_resp,
+        );
+
+        let kill_req = v1::KillTerminalRequest::new("sess_kill", "term_kill");
+        assert_v1_round_trip::<v1::KillTerminalRequest, v2::KillTerminalRequest>(kill_req.clone());
+        assert_json_eq_after_v1_to_v2::<v1::KillTerminalRequest, v2::KillTerminalRequest>(kill_req);
+
+        let kill_resp = v1::KillTerminalResponse::new();
+        assert_v1_round_trip::<v1::KillTerminalResponse, v2::KillTerminalResponse>(
+            kill_resp.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::KillTerminalResponse, v2::KillTerminalResponse>(
+            kill_resp,
+        );
+    }
+
+    // ------------------------------------------------------
+    // File system read/write requests and responses.
+    // These are the primary client-side edit surface.
+    // ------------------------------------------------------
+
+    #[test]
+    fn round_trips_write_text_file_request_and_response() {
+        let request = v1::WriteTextFileRequest::new(
+            "sess_write",
+            std::path::PathBuf::from("/workspace/README.md"),
+            "hello\nworld\n",
+        );
+        assert_v1_round_trip::<v1::WriteTextFileRequest, v2::WriteTextFileRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::WriteTextFileRequest, v2::WriteTextFileRequest>(
+            request,
+        );
+
+        let response = v1::WriteTextFileResponse::new();
+        assert_v1_round_trip::<v1::WriteTextFileResponse, v2::WriteTextFileResponse>(
+            response.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::WriteTextFileResponse, v2::WriteTextFileResponse>(
+            response,
+        );
+    }
+
+    #[test]
+    fn round_trips_read_text_file_request_with_range_and_response() {
+        // A ranged read with both line and limit exercises the u32
+        // options that the conversion must not truncate or reorder.
+        let request = v1::ReadTextFileRequest::new(
+            "sess_read",
+            std::path::PathBuf::from("/workspace/src/lib.rs"),
+        )
+        .line(42_u32)
+        .limit(10_u32);
+        assert_v1_round_trip::<v1::ReadTextFileRequest, v2::ReadTextFileRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ReadTextFileRequest, v2::ReadTextFileRequest>(request);
+
+        // Whole-file read (line/limit both None).
+        let whole = v1::ReadTextFileRequest::new(
+            "sess_read",
+            std::path::PathBuf::from("/workspace/CHANGELOG.md"),
+        );
+        assert_v1_round_trip::<v1::ReadTextFileRequest, v2::ReadTextFileRequest>(whole.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ReadTextFileRequest, v2::ReadTextFileRequest>(whole);
+
+        let response = v1::ReadTextFileResponse::new("file contents");
+        assert_v1_round_trip::<v1::ReadTextFileResponse, v2::ReadTextFileResponse>(
+            response.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::ReadTextFileResponse, v2::ReadTextFileResponse>(
+            response,
+        );
+    }
+
+    // ------------------------------------------------------
+    // Authenticate + Cancel notification (stable, no tests).
+    // ------------------------------------------------------
+
+    #[test]
+    fn round_trips_authenticate_request_and_response() {
+        let request = v1::AuthenticateRequest::new("oauth").meta(serde_json::Map::from_iter([(
+            "provider".to_string(),
+            serde_json::json!("anthropic"),
+        )]));
+        assert_v1_round_trip::<v1::AuthenticateRequest, v2::AuthenticateRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::AuthenticateRequest, v2::AuthenticateRequest>(request);
+
+        let response = v1::AuthenticateResponse::default();
+        assert_v1_round_trip::<v1::AuthenticateResponse, v2::AuthenticateResponse>(
+            response.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::AuthenticateResponse, v2::AuthenticateResponse>(
+            response,
+        );
+    }
+
+    #[test]
+    fn round_trips_cancel_notification() {
+        let notification = v1::CancelNotification::new("sess_cancel_1");
+        assert_v1_round_trip::<v1::CancelNotification, v2::CancelNotification>(
+            notification.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::CancelNotification, v2::CancelNotification>(
+            notification,
+        );
+    }
+
+    #[test]
+    fn round_trips_annotations_and_role_enum() {
+        // Annotations carries the Role enum, an f64 priority, an
+        // optional timestamp, and free-form meta. It's used across
+        // every content block, so drift here has a wide blast radius.
+        let annotations = v1::Annotations::new()
+            .audience(Some(vec![v1::Role::Assistant, v1::Role::User]))
+            .last_modified(Some("2026-05-17T12:34:56Z".to_string()))
+            .priority(Some(0.5))
+            .meta(serde_json::Map::from_iter([(
+                "source".to_string(),
+                serde_json::json!("tool_output"),
+            )]));
+
+        let block = v1::ContentBlock::Text(
+            v1::TextContent::new("annotated").annotations(annotations.clone()),
+        );
+        assert_v1_round_trip::<v1::ContentBlock, v2::ContentBlock>(block.clone());
+        assert_json_eq_after_v1_to_v2::<v1::ContentBlock, v2::ContentBlock>(block);
+
+        // Both Role variants explicitly, to catch enum reordering.
+        assert_v1_round_trip::<v1::Role, v2::Role>(v1::Role::Assistant);
+        assert_v1_round_trip::<v1::Role, v2::Role>(v1::Role::User);
+    }
+
+    // ------------------------------------------------------
+    // Enum-level routing tests.
+    //
+    // The top-level `ClientRequest`, `AgentRequest`, `ClientResponse`,
+    // `AgentResponse`, `ClientNotification`, and `AgentNotification`
+    // enums are the entry points for all v1<->v2 conversion. The
+    // Rust compiler already forces the match arms to be exhaustive,
+    // but that guarantees only that the code compiles — it does not
+    // guarantee the arms route to the correct inner type. Historically
+    // the copy/paste nature of the enum match arms has been a source of
+    // subtle bugs where variant A's data ends up wrapped in variant B.
+    //
+    // The tests below exhaustively construct one representative
+    // instance of every stable variant per enum, round-trip through
+    // v2, and assert JSON equality via serde. If a new variant is
+    // added without being included in a fixture list here, the test
+    // will still pass — but the reviewer's job is to notice the
+    // missing entry, and the test file becomes a living checklist of
+    // which enum variants are covered.
+    // ------------------------------------------------------
+
+    /// Assert that `value` survives a v1 -> v2 -> v1 round trip when
+    /// wrapped in a routing enum. The enums are `#[serde(untagged)]`
+    /// and lack `PartialEq`, so we compare their `serde_json::Value`
+    /// representation instead of the Rust value.
+    fn assert_enum_json_round_trip<T1, T2>(value: T1)
+    where
+        T1: IntoV2<Output = T2> + Clone + serde::Serialize,
+        T2: IntoV1<Output = T1> + serde::Serialize,
+    {
+        let before = serde_json::to_value(&value).expect("v1 serialize");
+        let as_v2 = v1_to_v2(value).expect("v1 -> v2 conversion");
+        let v2_json = serde_json::to_value(&as_v2).expect("v2 serialize");
+        assert_eq!(before, v2_json, "JSON drifted on v1 -> v2 for enum");
+        let back = v2_to_v1(as_v2).expect("v2 -> v1 conversion");
+        let after = serde_json::to_value(&back).expect("v1 serialize after round trip");
+        assert_eq!(before, after, "JSON drifted on v2 -> v1 for enum");
+    }
+
+    #[test]
+    fn client_request_variants_round_trip_through_routing_enum() {
+        let variants: Vec<v1::ClientRequest> = vec![
+            v1::ClientRequest::InitializeRequest(v1::InitializeRequest::new(ProtocolVersion::V1)),
+            v1::ClientRequest::AuthenticateRequest(v1::AuthenticateRequest::new("oauth")),
+            v1::ClientRequest::LogoutRequest(v1::LogoutRequest::new()),
+            v1::ClientRequest::NewSessionRequest(v1::NewSessionRequest::new("/workspace")),
+            v1::ClientRequest::LoadSessionRequest(v1::LoadSessionRequest::new(
+                "sess_load",
+                "/workspace",
+            )),
+            v1::ClientRequest::ListSessionsRequest(v1::ListSessionsRequest::new()),
+            v1::ClientRequest::ResumeSessionRequest(v1::ResumeSessionRequest::new(
+                "sess_resume",
+                "/workspace",
+            )),
+            v1::ClientRequest::CloseSessionRequest(v1::CloseSessionRequest::new("sess_close")),
+            v1::ClientRequest::SetSessionModeRequest(v1::SetSessionModeRequest::new(
+                "sess_mode",
+                "architect",
+            )),
+            v1::ClientRequest::PromptRequest(v1::PromptRequest::new(
+                "sess_prompt",
+                vec![v1::ContentBlock::Text(v1::TextContent::new("hi"))],
+            )),
+        ];
+
+        for variant in variants {
+            assert_enum_json_round_trip::<v1::ClientRequest, v2::ClientRequest>(variant);
+        }
+
+        #[cfg(feature = "unstable_session_delete")]
+        assert_enum_json_round_trip::<v1::ClientRequest, v2::ClientRequest>(
+            v1::ClientRequest::DeleteSessionRequest(v1::DeleteSessionRequest::new(
+                "sess_delete_routed",
+            )),
+        );
+
+        #[cfg(feature = "unstable_session_model")]
+        assert_enum_json_round_trip::<v1::ClientRequest, v2::ClientRequest>(
+            v1::ClientRequest::SetSessionModelRequest(v1::SetSessionModelRequest::new(
+                "sess_model_routed",
+                v1::ModelId::new("claude-opus"),
+            )),
+        );
+    }
+
+    #[test]
+    fn agent_request_variants_round_trip_through_routing_enum() {
+        let variants: Vec<v1::AgentRequest> = vec![
+            v1::AgentRequest::WriteTextFileRequest(v1::WriteTextFileRequest::new(
+                "sess_write_agentreq",
+                std::path::PathBuf::from("/workspace/x.txt"),
+                "content",
+            )),
+            v1::AgentRequest::ReadTextFileRequest(v1::ReadTextFileRequest::new(
+                "sess_read_agentreq",
+                std::path::PathBuf::from("/workspace/y.txt"),
+            )),
+            v1::AgentRequest::RequestPermissionRequest(v1::RequestPermissionRequest::new(
+                "sess_perm_agentreq",
+                v1::ToolCallUpdate::new(
+                    "tc_perm",
+                    v1::ToolCallUpdateFields::new().title("Edit file"),
+                ),
+                vec![v1::PermissionOption::new(
+                    "opt_yes",
+                    "Yes",
+                    v1::PermissionOptionKind::AllowOnce,
+                )],
+            )),
+            v1::AgentRequest::CreateTerminalRequest(v1::CreateTerminalRequest::new(
+                "sess_ct_agentreq",
+                "cargo",
+            )),
+            v1::AgentRequest::TerminalOutputRequest(v1::TerminalOutputRequest::new(
+                "sess_to_agentreq",
+                "term_1",
+            )),
+            v1::AgentRequest::ReleaseTerminalRequest(v1::ReleaseTerminalRequest::new(
+                "sess_rt_agentreq",
+                "term_1",
+            )),
+            v1::AgentRequest::WaitForTerminalExitRequest(v1::WaitForTerminalExitRequest::new(
+                "sess_wte_agentreq",
+                "term_1",
+            )),
+            v1::AgentRequest::KillTerminalRequest(v1::KillTerminalRequest::new(
+                "sess_kill_agentreq",
+                "term_1",
+            )),
+        ];
+
+        for variant in variants {
+            assert_enum_json_round_trip::<v1::AgentRequest, v2::AgentRequest>(variant);
+        }
+    }
+
+    #[test]
+    fn client_response_variants_round_trip_through_routing_enum() {
+        let variants: Vec<v1::ClientResponse> = vec![
+            v1::ClientResponse::WriteTextFileResponse(v1::WriteTextFileResponse::new()),
+            v1::ClientResponse::ReadTextFileResponse(v1::ReadTextFileResponse::new("body")),
+            v1::ClientResponse::RequestPermissionResponse(v1::RequestPermissionResponse::new(
+                v1::RequestPermissionOutcome::Cancelled,
+            )),
+            v1::ClientResponse::CreateTerminalResponse(v1::CreateTerminalResponse::new("term_1")),
+            v1::ClientResponse::TerminalOutputResponse(v1::TerminalOutputResponse::new(
+                "output", false,
+            )),
+            v1::ClientResponse::ReleaseTerminalResponse(v1::ReleaseTerminalResponse::new()),
+            v1::ClientResponse::WaitForTerminalExitResponse(v1::WaitForTerminalExitResponse::new(
+                v1::TerminalExitStatus::new().exit_code(0_u32),
+            )),
+            v1::ClientResponse::KillTerminalResponse(v1::KillTerminalResponse::new()),
+        ];
+
+        for variant in variants {
+            assert_enum_json_round_trip::<v1::ClientResponse, v2::ClientResponse>(variant);
+        }
+    }
+
+    #[test]
+    fn agent_response_variants_round_trip_through_routing_enum() {
+        let variants: Vec<v1::AgentResponse> = vec![
+            v1::AgentResponse::InitializeResponse(v1::InitializeResponse::new(ProtocolVersion::V1)),
+            v1::AgentResponse::AuthenticateResponse(v1::AuthenticateResponse::default()),
+            v1::AgentResponse::LogoutResponse(v1::LogoutResponse::new()),
+            v1::AgentResponse::NewSessionResponse(v1::NewSessionResponse::new("sess_new")),
+            v1::AgentResponse::LoadSessionResponse(v1::LoadSessionResponse::default()),
+            v1::AgentResponse::ListSessionsResponse(v1::ListSessionsResponse::new(vec![])),
+            v1::AgentResponse::ResumeSessionResponse(v1::ResumeSessionResponse::new()),
+            v1::AgentResponse::CloseSessionResponse(v1::CloseSessionResponse::default()),
+            v1::AgentResponse::SetSessionModeResponse(v1::SetSessionModeResponse::new()),
+            v1::AgentResponse::PromptResponse(v1::PromptResponse::new(v1::StopReason::EndTurn)),
+        ];
+
+        for variant in variants {
+            assert_enum_json_round_trip::<v1::AgentResponse, v2::AgentResponse>(variant);
+        }
+
+        #[cfg(feature = "unstable_session_delete")]
+        assert_enum_json_round_trip::<v1::AgentResponse, v2::AgentResponse>(
+            v1::AgentResponse::DeleteSessionResponse(v1::DeleteSessionResponse::new()),
+        );
+
+        #[cfg(feature = "unstable_session_model")]
+        assert_enum_json_round_trip::<v1::AgentResponse, v2::AgentResponse>(
+            v1::AgentResponse::SetSessionModelResponse(v1::SetSessionModelResponse::default()),
+        );
+    }
+
+    #[test]
+    fn client_notification_variants_round_trip_through_routing_enum() {
+        let variants: Vec<v1::ClientNotification> =
+            vec![v1::ClientNotification::CancelNotification(
+                v1::CancelNotification::new("sess_notif_cancel"),
+            )];
+
+        for variant in variants {
+            assert_enum_json_round_trip::<v1::ClientNotification, v2::ClientNotification>(variant);
+        }
+    }
+
+    #[test]
+    fn agent_notification_variants_round_trip_through_routing_enum() {
+        let variants: Vec<v1::AgentNotification> =
+            vec![v1::AgentNotification::SessionNotification(
+                v1::SessionNotification::new(
+                    "sess_notif_update",
+                    v1::SessionUpdate::AgentMessageChunk(v1::ContentChunk::new(
+                        v1::ContentBlock::Text(v1::TextContent::new("chunk")),
+                    )),
+                ),
+            )];
+
+        for variant in variants {
+            assert_enum_json_round_trip::<v1::AgentNotification, v2::AgentNotification>(variant);
+        }
+    }
+
+    /// Grouped select options serialize as an untagged enum variant
+    /// distinct from ungrouped options. Round-trip tests protect the
+    /// serde ordering because `#[serde(untagged)]` will silently accept
+    /// the wrong variant if the shape drifts.
+    #[test]
+    fn round_trips_grouped_session_config_options() {
+        let response = v1::SetSessionConfigOptionResponse::new(vec![
+            v1::SessionConfigOption::new(
+                "model",
+                "Model",
+                v1::SessionConfigKind::Select(v1::SessionConfigSelect::new(
+                    "anthropic/claude-opus",
+                    vec![
+                        v1::SessionConfigSelectGroup::new(
+                            "anthropic",
+                            "Anthropic",
+                            vec![
+                                v1::SessionConfigSelectOption::new("anthropic/claude-opus", "Opus"),
+                                v1::SessionConfigSelectOption::new(
+                                    "anthropic/claude-sonnet",
+                                    "Sonnet",
+                                ),
+                            ],
+                        ),
+                        v1::SessionConfigSelectGroup::new(
+                            "openai",
+                            "OpenAI",
+                            vec![v1::SessionConfigSelectOption::new("openai/gpt-5", "GPT-5")],
+                        ),
+                    ],
+                )),
+            )
+            .category(v1::SessionConfigOptionCategory::Model),
+        ]);
+        assert_v1_round_trip::<
+            v1::SetSessionConfigOptionResponse,
+            v2::SetSessionConfigOptionResponse,
+        >(response.clone());
+        assert_json_eq_after_v1_to_v2::<
+            v1::SetSessionConfigOptionResponse,
+            v2::SetSessionConfigOptionResponse,
+        >(response);
+    }
 }
