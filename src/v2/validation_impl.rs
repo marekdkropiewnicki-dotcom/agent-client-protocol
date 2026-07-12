@@ -3,11 +3,11 @@
 use super::{AuthMethod, AuthMethodAgent, AuthMethodId, AuthenticateRequest};
 use crate::validation::{
     StringConstraints, Validate, ValidationError, validate_auth_method_id,
-    validate_optional_string_field, validate_string_field, validate_unique_ids,
+    validate_optional_string_field, validate_string_field, validate_unique_ids, validate_url,
 };
 
 #[cfg(feature = "unstable_auth_methods")]
-use crate::validation::{validate_env_var_name, validate_url};
+use crate::validation::validate_env_var_name;
 
 #[cfg(feature = "unstable_auth_methods")]
 use super::{AuthEnvVar, AuthMethodEnvVar};
