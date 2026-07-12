@@ -13,6 +13,8 @@ jobs:
     name: Sync Registry Documentation
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      RELEASE_PLZ_APP_ID: ${{ secrets.RELEASE_PLZ_APP_ID }}
     permissions:
       contents: write
       pull-requests: write
@@ -58,7 +60,7 @@ jobs:
       - name: Generate GitHub token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         id: generate-token
-        if: steps.changes.outputs.changed == 'true'
+        if: steps.changes.outputs.changed == 'true' && env.RELEASE_PLZ_APP_ID != ''
         with:
           # GitHub App ID secret name
           app-id: ${{ secrets.RELEASE_PLZ_APP_ID }}
@@ -67,7 +69,7 @@ jobs:
 
       - name: Create Pull Request
         id: cpr
-        if: steps.changes.outputs.changed == 'true'
+        if: steps.changes.outputs.changed == 'true' && env.RELEASE_PLZ_APP_ID != ''
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v6
         with:
           token: ${{ steps.generate-token.outputs.token }}
@@ -82,7 +84,7 @@ jobs:
           labels: documentation
 
       - name: Enable auto-merge
-        if: steps.cpr.outputs.pull-request-number
+        if: env.RELEASE_PLZ_APP_ID != '' && steps.cpr.outputs.pull-request-number
         run: gh pr merge --squash --auto "${{ steps.cpr.outputs.pull-request-number }}"
         env:
           GH_TOKEN: ${{ steps.generate-token.outputs.token }}
