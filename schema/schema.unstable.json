@@ -114,7 +114,8 @@
           "default": {
             "audio": false,
             "embeddedContext": false,
-            "image": false
+            "image": false,
+            "promptVariables": false
           },
           "description": "Prompt capabilities supported by the agent."
         },
@@ -1812,6 +1813,22 @@
           },
           "required": ["type"],
           "type": "object"
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/PromptTemplateContent"
+            }
+          ],
+          "description": "A template that supports variable substitution using {{variable_name}} syntax.\n\nAllows dynamic content generation by substituting variables into template strings.\nVariables are resolved at processing time and can include values from context,\nuser input, or system state.\n\nRequires the `promptVariables` prompt capability when included in prompts.",
+          "properties": {
+            "type": {
+              "const": "prompt_template",
+              "type": "string"
+            }
+          },
+          "required": ["type"],
+          "type": "object"
         }
       ]
     },
@@ -3167,7 +3184,8 @@
             "promptCapabilities": {
               "audio": false,
               "embeddedContext": false,
-              "image": false
+              "image": false,
+              "promptVariables": false
             },
             "sessionCapabilities": {}
           },
@@ -5094,6 +5112,11 @@
           "default": false,
           "description": "Agent supports [`ContentBlock::Image`].",
           "type": "boolean"
+        },
+        "promptVariables": {
+          "default": false,
+          "description": "Agent supports prompt variables and templates in `session/prompt` requests.\n\nWhen enabled, the Client is allowed to include [`ContentBlock::PromptTemplate`]\nin prompt requests with variable substitution support.",
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -5167,6 +5190,143 @@
       "type": "object",
       "x-method": "session/prompt",
       "x-side": "agent"
+    },
+    "PromptTemplateContent": {
+      "description": "A template content block that supports variable substitution.\n\nTemplates use {{variable_name}} syntax for variable placeholders that can be\nsubstituted with actual values at processing time. This enables dynamic content\ngeneration and reusable prompt templates.",
+      "properties": {
+        "_meta": {
+          "additionalProperties": true,
+          "description": "The _meta property is reserved by ACP to allow clients and agents to attach additional\nmetadata to their interactions. Implementations MUST NOT make assumptions about values at\nthese keys.\n\nSee protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/extensibility)",
+          "type": ["object", "null"]
+        },
+        "annotations": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Annotations"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "template": {
+          "description": "The template string with {{variable_name}} placeholders.",
+          "type": "string"
+        },
+        "variables": {
+          "description": "Variables available for substitution in this template.",
+          "items": {
+            "$ref": "#/$defs/PromptVariable"
+          },
+          "type": "array"
+        }
+      },
+      "required": ["template", "variables"],
+      "type": "object"
+    },
+    "PromptVariable": {
+      "description": "A variable that can be substituted in a prompt template.\n\nVariables define named placeholders that can be replaced with actual values\nduring template processing. They can include metadata about expected types,\ndescriptions for user interfaces, and validation constraints.",
+      "properties": {
+        "_meta": {
+          "additionalProperties": true,
+          "description": "The _meta property is reserved by ACP to allow clients and agents to attach additional\nmetadata to their interactions. Implementations MUST NOT make assumptions about values at\nthese keys.\n\nSee protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/extensibility)",
+          "type": ["object", "null"]
+        },
+        "default_value": {
+          "description": "Default value to use if no value is provided.",
+          "type": ["string", "null"]
+        },
+        "description": {
+          "description": "Human-readable description of this variable.",
+          "type": ["string", "null"]
+        },
+        "name": {
+          "description": "The variable name (used in {{variable_name}} placeholders).",
+          "type": "string"
+        },
+        "required": {
+          "default": false,
+          "description": "Whether this variable is required for template processing.",
+          "type": "boolean"
+        },
+        "type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PromptVariableType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The expected type of this variable's value."
+        },
+        "value": {
+          "description": "The current value of the variable (if set).",
+          "type": ["string", "null"]
+        }
+      },
+      "required": ["name"],
+      "type": "object"
+    },
+    "PromptVariableType": {
+      "description": "The expected type of a prompt variable's value.\n\nThis helps clients provide appropriate input interfaces and validation\nfor prompt variables.",
+      "oneOf": [
+        {
+          "const": "string",
+          "description": "A string value (default if not specified).",
+          "type": "string"
+        },
+        {
+          "const": "number",
+          "description": "A numeric value (integer or float).",
+          "type": "string"
+        },
+        {
+          "const": "boolean",
+          "description": "A boolean value (true/false).",
+          "type": "string"
+        },
+        {
+          "const": "date_time",
+          "description": "A date/time value in ISO 8601 format.",
+          "type": "string"
+        },
+        {
+          "const": "url",
+          "description": "A URL or URI reference.",
+          "type": "string"
+        },
+        {
+          "const": "email",
+          "description": "An email address.",
+          "type": "string"
+        },
+        {
+          "const": "text",
+          "description": "A multiline text value.",
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A value selected from a predefined list (enum-like).",
+          "properties": {
+            "select": {
+              "properties": {
+                "options": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": ["options"],
+              "type": "object"
+            }
+          },
+          "required": ["select"],
+          "type": "object"
+        }
+      ]
     },
     "ProtocolVersion": {
       "description": "Protocol version identifier.\n\nThis version is only bumped for breaking changes.\nNon-breaking changes should be introduced via capabilities.",
