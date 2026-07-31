@@ -2252,4 +2252,193 @@ mod tests {
         .unwrap();
         assert_eq!(request_with_null_params.params, None);
     }
+
+    // ---- SessionUpdate discriminator wire format (v2) ---------------------
+    //
+    // Mirrors the v1 coverage: ACP v2 is currently a structural copy of v1,
+    // but its `SessionUpdate` enum is a *separate* type with its own derive
+    // macros — a rename or a lost `rename_all = "snake_case"` on the v2 side
+    // would silently pass v1 tests. Pin every stable v2 variant to its exact
+    // wire label so v2 stays wire-compatible with v1 while it evolves.
+
+    #[test]
+    fn session_update_variant_discriminators_snake_case() {
+        use crate::v2::{
+            PlanEntry, PlanEntryPriority, PlanEntryStatus, TextContent, ToolCallUpdateFields,
+        };
+        use serde_json::Value;
+
+        let chunk = || ContentChunk::new(ContentBlock::Text(TextContent::new("hi")));
+
+        let cases: Vec<(SessionUpdate, &str)> = vec![
+            (
+                SessionUpdate::UserMessageChunk(chunk()),
+                "user_message_chunk",
+            ),
+            (
+                SessionUpdate::AgentMessageChunk(chunk()),
+                "agent_message_chunk",
+            ),
+            (
+                SessionUpdate::AgentThoughtChunk(chunk()),
+                "agent_thought_chunk",
+            ),
+            (
+                SessionUpdate::ToolCall(ToolCall::new("tc-1", "read foo.rs")),
+                "tool_call",
+            ),
+            (
+                SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                    "tc-1",
+                    ToolCallUpdateFields::new().title("read foo.rs"),
+                )),
+                "tool_call_update",
+            ),
+            (
+                SessionUpdate::Plan(Plan::new(vec![PlanEntry::new(
+                    "do the thing",
+                    PlanEntryPriority::High,
+                    PlanEntryStatus::Pending,
+                )])),
+                "plan",
+            ),
+            (
+                SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![
+                    AvailableCommand::new("plan", "Create a plan"),
+                ])),
+                "available_commands_update",
+            ),
+            (
+                SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new("focused")),
+                "current_mode_update",
+            ),
+            (
+                SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(Vec::new())),
+                "config_option_update",
+            ),
+            (
+                SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().title("Untitled")),
+                "session_info_update",
+            ),
+        ];
+
+        for (update, expected_label) in cases {
+            let value = serde_json::to_value(&update).unwrap();
+
+            let obj = value
+                .as_object()
+                .expect("SessionUpdate variants must serialize as JSON objects");
+
+            assert_eq!(
+                obj.get("sessionUpdate"),
+                Some(&Value::String(expected_label.to_owned())),
+                "wrong or missing `sessionUpdate` tag for {update:?}",
+            );
+
+            let round_tripped: SessionUpdate = serde_json::from_value(value.clone())
+                .unwrap_or_else(|e| panic!("round-trip failed for {expected_label}: {e}"));
+
+            assert_eq!(
+                round_tripped, update,
+                "round-trip mismatch for {expected_label}"
+            );
+        }
+    }
+
+    #[test]
+    fn session_update_rejects_unknown_variant() {
+        use serde_json::json;
+
+        let err = serde_json::from_value::<SessionUpdate>(json!({
+            "sessionUpdate": "unknown_variant_from_the_future",
+            "content": { "type": "text", "text": "hi" }
+        }))
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown_variant_from_the_future")
+                || msg.contains("sessionUpdate")
+                || msg.contains("variant"),
+            "expected the deserialize error to reference the unknown \
+             discriminator; got: {msg}",
+        );
+
+        assert!(
+            serde_json::from_value::<SessionUpdate>(json!({
+                "content": { "type": "text", "text": "hi" }
+            }))
+            .is_err(),
+        );
+    }
+
+    // ---- AvailableCommandInput dispatch + AvailableCommand resilience (v2)-
+
+    #[test]
+    fn available_command_input_deserializes_untagged_and_omits_type_tag() {
+        use serde_json::{Value, json};
+
+        let cmd = AvailableCommand::new("plan", "Create a plan").input(
+            AvailableCommandInput::Unstructured(UnstructuredCommandInput::new("what to plan")),
+        );
+
+        let value = serde_json::to_value(&cmd).unwrap();
+        let input = value
+            .get("input")
+            .and_then(Value::as_object)
+            .expect("command.input must be a JSON object");
+
+        assert!(
+            !input.contains_key("type"),
+            "AvailableCommandInput is #[serde(untagged)] — no `type` \
+             discriminator should be emitted; got: {input:?}"
+        );
+        assert_eq!(input.get("hint"), Some(&json!("what to plan")));
+
+        let round_tripped: AvailableCommand = serde_json::from_value(value).unwrap();
+        assert_eq!(round_tripped, cmd);
+    }
+
+    #[test]
+    fn available_command_falls_back_to_none_input_on_unknown_shape() {
+        use serde_json::json;
+
+        let cmd: AvailableCommand = serde_json::from_value(json!({
+            "name": "plan",
+            "description": "Create a plan",
+            "input": { "somethingBrandNew": 42 }
+        }))
+        .unwrap();
+
+        assert_eq!(cmd.name, "plan");
+        assert_eq!(cmd.description, "Create a plan");
+        assert_eq!(cmd.input, None);
+
+        let cmd_null: AvailableCommand = serde_json::from_value(json!({
+            "name": "plan",
+            "description": "Create a plan",
+            "input": null,
+        }))
+        .unwrap();
+        assert_eq!(cmd_null.input, None);
+    }
+
+    #[test]
+    fn available_commands_update_skips_malformed_entries() {
+        use serde_json::json;
+
+        let update: AvailableCommandsUpdate = serde_json::from_value(json!({
+            "availableCommands": [
+                { "name": "plan", "description": "Create a plan" },
+                { "name": 42, "description": "wrong type — should be dropped" },
+                "totally the wrong shape",
+                { "name": "research", "description": "Research the codebase" }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(update.available_commands.len(), 2);
+        assert_eq!(update.available_commands[0].name, "plan");
+        assert_eq!(update.available_commands[1].name, "research");
+    }
 }
