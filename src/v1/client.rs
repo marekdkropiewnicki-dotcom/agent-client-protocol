@@ -2252,4 +2252,415 @@ mod tests {
         .unwrap();
         assert_eq!(request_with_null_params.params, None);
     }
+
+    // --- Regression coverage for permissions, file system, terminals, and
+    // agent-side method routing. These types control whether the agent is
+    // allowed to act on the user's machine, which file is read or written,
+    // and which subprocess is started, so any silent wire-format drift here
+    // can have a large blast radius. ---
+
+    #[test]
+    fn permission_option_kind_wire_format_is_snake_case() {
+        use serde_json::json;
+
+        // Wire values are checked explicitly because the agent and client
+        // are independent processes: if the rename changes, a "reject_once"
+        // could silently become an "allow_once" on the other side.
+        for (variant, expected) in [
+            (PermissionOptionKind::AllowOnce, "allow_once"),
+            (PermissionOptionKind::AllowAlways, "allow_always"),
+            (PermissionOptionKind::RejectOnce, "reject_once"),
+            (PermissionOptionKind::RejectAlways, "reject_always"),
+        ] {
+            assert_eq!(serde_json::to_value(variant).unwrap(), json!(expected));
+            let parsed: PermissionOptionKind = serde_json::from_value(json!(expected)).unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn permission_outcome_uses_discriminator_field() {
+        use serde_json::json;
+
+        let cancelled = RequestPermissionOutcome::Cancelled;
+        assert_eq!(
+            serde_json::to_value(&cancelled).unwrap(),
+            json!({ "outcome": "cancelled" })
+        );
+        let parsed: RequestPermissionOutcome =
+            serde_json::from_value(json!({ "outcome": "cancelled" })).unwrap();
+        assert_eq!(parsed, RequestPermissionOutcome::Cancelled);
+
+        let selected =
+            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new("allow_once_opt"));
+        assert_eq!(
+            serde_json::to_value(&selected).unwrap(),
+            json!({
+                "outcome": "selected",
+                "optionId": "allow_once_opt"
+            })
+        );
+        let parsed: RequestPermissionOutcome = serde_json::from_value(json!({
+            "outcome": "selected",
+            "optionId": "allow_once_opt"
+        }))
+        .unwrap();
+        match parsed {
+            RequestPermissionOutcome::Selected(s) => {
+                assert_eq!(s.option_id, PermissionOptionId::new("allow_once_opt"));
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_permission_request_round_trip() {
+        use crate::{ToolCallId, ToolCallUpdateFields};
+        use serde_json::json;
+
+        let request = RequestPermissionRequest::new(
+            "session-1",
+            ToolCallUpdate::new(ToolCallId::new("tool-1"), ToolCallUpdateFields::new()),
+            vec![
+                PermissionOption::new("opt-allow", "Allow", PermissionOptionKind::AllowOnce),
+                PermissionOption::new("opt-reject", "Reject", PermissionOptionKind::RejectAlways),
+            ],
+        );
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["sessionId"], json!("session-1"));
+        assert_eq!(value["toolCall"]["toolCallId"], json!("tool-1"));
+        assert_eq!(value["options"][0]["kind"], json!("allow_once"));
+        assert_eq!(value["options"][1]["kind"], json!("reject_always"));
+
+        let parsed: RequestPermissionRequest = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, request);
+    }
+
+    #[test]
+    fn agent_request_method_dispatch_matches_constants() {
+        // Routing is the boundary between trusted ACP behavior and an
+        // ext-method passthrough, so each stable variant should land on the
+        // exact method name a peer expects.
+        use crate::{ToolCallId, ToolCallUpdateFields};
+
+        assert_eq!(
+            AgentRequest::WriteTextFileRequest(WriteTextFileRequest::new(
+                "s",
+                std::path::PathBuf::from("/tmp/a.txt"),
+                "hi"
+            ))
+            .method(),
+            "fs/write_text_file"
+        );
+        assert_eq!(
+            AgentRequest::ReadTextFileRequest(ReadTextFileRequest::new(
+                "s",
+                std::path::PathBuf::from("/tmp/a.txt")
+            ))
+            .method(),
+            "fs/read_text_file"
+        );
+        assert_eq!(
+            AgentRequest::RequestPermissionRequest(RequestPermissionRequest::new(
+                "s",
+                ToolCallUpdate::new(ToolCallId::new("t"), ToolCallUpdateFields::new()),
+                vec![]
+            ))
+            .method(),
+            "session/request_permission"
+        );
+        assert_eq!(
+            AgentRequest::CreateTerminalRequest(CreateTerminalRequest::new("s", "echo")).method(),
+            "terminal/create"
+        );
+        assert_eq!(
+            AgentRequest::TerminalOutputRequest(TerminalOutputRequest::new("s", "t1")).method(),
+            "terminal/output"
+        );
+        assert_eq!(
+            AgentRequest::ReleaseTerminalRequest(ReleaseTerminalRequest::new("s", "t1")).method(),
+            "terminal/release"
+        );
+        assert_eq!(
+            AgentRequest::WaitForTerminalExitRequest(WaitForTerminalExitRequest::new("s", "t1"))
+                .method(),
+            "terminal/wait_for_exit"
+        );
+        assert_eq!(
+            AgentRequest::KillTerminalRequest(KillTerminalRequest::new("s", "t1")).method(),
+            "terminal/kill"
+        );
+    }
+
+    #[test]
+    fn agent_request_ext_routes_through_inner_method() {
+        use serde_json::value::RawValue;
+        use std::sync::Arc;
+
+        let raw: Arc<RawValue> = RawValue::from_string("{\"k\":1}".to_string())
+            .unwrap()
+            .into();
+        let req = AgentRequest::ExtMethodRequest(ExtRequest::new("_custom/method", raw));
+        assert_eq!(req.method(), "_custom/method");
+    }
+
+    #[test]
+    fn agent_notification_method_dispatch() {
+        use crate::{ContentChunk, SessionUpdate, TextContent};
+        use serde_json::value::RawValue;
+        use std::sync::Arc;
+
+        let session = AgentNotification::SessionNotification(SessionNotification::new(
+            "sess-1",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(crate::ContentBlock::Text(
+                TextContent {
+                    annotations: None,
+                    text: "hi".to_string(),
+                    meta: None,
+                },
+            ))),
+        ));
+        assert_eq!(session.method(), "session/update");
+
+        let raw: Arc<RawValue> = RawValue::from_string("{}".to_string()).unwrap().into();
+        let ext = AgentNotification::ExtNotification(ExtNotification::new("_custom/notify", raw));
+        assert_eq!(ext.method(), "_custom/notify");
+    }
+
+    #[test]
+    fn read_text_file_request_wire_format() {
+        use serde_json::json;
+
+        let req = ReadTextFileRequest::new("s1", std::path::PathBuf::from("/tmp/a.txt"));
+        // line and limit are bare `Option<u32>` with `skip_serializing_none`,
+        // so they should disappear from the wire when None.
+        assert_eq!(
+            serde_json::to_value(&req).unwrap(),
+            json!({ "sessionId": "s1", "path": "/tmp/a.txt" })
+        );
+
+        let req = ReadTextFileRequest::new("s1", std::path::PathBuf::from("/tmp/a.txt"))
+            .line(10u32)
+            .limit(50u32);
+        assert_eq!(
+            serde_json::to_value(&req).unwrap(),
+            json!({
+                "sessionId": "s1",
+                "path": "/tmp/a.txt",
+                "line": 10,
+                "limit": 50
+            })
+        );
+
+        // Round-trip with all fields populated.
+        let parsed: ReadTextFileRequest = serde_json::from_value(json!({
+            "sessionId": "s1",
+            "path": "/tmp/a.txt",
+            "line": 10,
+            "limit": 50
+        }))
+        .unwrap();
+        assert_eq!(parsed.session_id, SessionId(Arc::from("s1")));
+        assert_eq!(parsed.line, Some(10));
+        assert_eq!(parsed.limit, Some(50));
+    }
+
+    #[test]
+    fn write_text_file_response_accepts_empty_payload() {
+        // `WriteTextFileResponse` is marked `#[serde(default)]` in
+        // `ClientResponse`, but the inner type itself must also deserialize
+        // from `{}` for that to work.
+        let from_empty: WriteTextFileResponse = serde_json::from_str("{}").unwrap();
+        assert_eq!(from_empty, WriteTextFileResponse::new());
+    }
+
+    #[test]
+    fn empty_terminal_responses_accept_empty_payload() {
+        let r: ReleaseTerminalResponse = serde_json::from_str("{}").unwrap();
+        assert_eq!(r, ReleaseTerminalResponse::new());
+
+        let k: KillTerminalResponse = serde_json::from_str("{}").unwrap();
+        assert_eq!(k, KillTerminalResponse::new());
+    }
+
+    #[test]
+    fn terminal_exit_status_round_trip() {
+        use serde_json::json;
+
+        // The struct uses `skip_serializing_none`, so a fully-empty exit
+        // status serializes to `{}` and missing keys are tolerated on
+        // deserialization.
+        let empty = TerminalExitStatus::new();
+        assert_eq!(serde_json::to_value(&empty).unwrap(), json!({}));
+
+        let from_signal = TerminalExitStatus::new().signal("SIGTERM".to_string());
+        assert_eq!(
+            serde_json::to_value(&from_signal).unwrap(),
+            json!({ "signal": "SIGTERM" })
+        );
+
+        // Explicit `null` must still deserialize as `None`.
+        let parsed: TerminalExitStatus =
+            serde_json::from_value(json!({ "exitCode": 0, "signal": null })).unwrap();
+        assert_eq!(parsed.exit_code, Some(0));
+        assert_eq!(parsed.signal, None);
+
+        // Both fields populated round-trip.
+        let exit = TerminalExitStatus::new()
+            .exit_code(137u32)
+            .signal("SIGKILL".to_string());
+        let value = serde_json::to_value(&exit).unwrap();
+        assert_eq!(value, json!({ "exitCode": 137, "signal": "SIGKILL" }));
+        let parsed: TerminalExitStatus = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, exit);
+    }
+
+    #[test]
+    fn wait_for_terminal_exit_response_flattens_status() {
+        use serde_json::json;
+
+        let response = WaitForTerminalExitResponse::new(
+            TerminalExitStatus::new()
+                .exit_code(1u32)
+                .signal("SIGKILL".to_string()),
+        );
+        // The exit_status is `#[serde(flatten)]`, so the fields should
+        // appear at the top level rather than nested under "exitStatus".
+        assert_eq!(
+            serde_json::to_value(&response).unwrap(),
+            json!({ "exitCode": 1, "signal": "SIGKILL" })
+        );
+
+        // And the inverse direction: a flat payload deserializes back into
+        // the nested struct.
+        let parsed: WaitForTerminalExitResponse =
+            serde_json::from_value(json!({ "exitCode": 0 })).unwrap();
+        assert_eq!(parsed.exit_status.exit_code, Some(0));
+        assert_eq!(parsed.exit_status.signal, None);
+    }
+
+    #[test]
+    fn create_terminal_request_serialization_omits_empty_collections() {
+        use serde_json::json;
+
+        let req = CreateTerminalRequest::new("s1", "echo");
+        // Empty `args` and `env` are skipped in serialization.
+        assert_eq!(
+            serde_json::to_value(&req).unwrap(),
+            json!({ "sessionId": "s1", "command": "echo" })
+        );
+
+        let req_full = CreateTerminalRequest::new("s1", "ls")
+            .args(vec!["-la".to_string()])
+            .env(vec![EnvVariable::new("PATH", "/usr/bin")])
+            .cwd(std::path::PathBuf::from("/tmp"))
+            .output_byte_limit(1024u64);
+        let value = serde_json::to_value(&req_full).unwrap();
+        assert_eq!(value["args"], json!(["-la"]));
+        assert_eq!(value["env"][0]["name"], json!("PATH"));
+        assert_eq!(value["env"][0]["value"], json!("/usr/bin"));
+        assert_eq!(value["cwd"], json!("/tmp"));
+        assert_eq!(value["outputByteLimit"], json!(1024));
+
+        let parsed: CreateTerminalRequest = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.args, vec!["-la".to_string()]);
+        assert_eq!(parsed.env[0].name, "PATH");
+        assert_eq!(parsed.cwd, Some(std::path::PathBuf::from("/tmp")));
+        assert_eq!(parsed.output_byte_limit, Some(1024));
+    }
+
+    #[test]
+    fn terminal_output_response_truncated_and_optional_exit_status() {
+        use serde_json::json;
+
+        let response = TerminalOutputResponse::new("partial...", true);
+        let value = serde_json::to_value(&response).unwrap();
+        assert_eq!(value["output"], json!("partial..."));
+        assert_eq!(value["truncated"], json!(true));
+        // `exit_status` field is skipped when `None` due to skip_serializing_none.
+        assert!(value.get("exitStatus").is_none());
+
+        let response = response.exit_status(TerminalExitStatus::new().exit_code(0u32));
+        let value = serde_json::to_value(&response).unwrap();
+        assert_eq!(value["exitStatus"]["exitCode"], json!(0));
+    }
+
+    #[test]
+    fn file_system_capabilities_default_is_no_op() {
+        use serde_json::json;
+
+        // Defaults serialize to all-false for the capability bits.
+        let caps = FileSystemCapabilities::new();
+        assert_eq!(
+            serde_json::to_value(&caps).unwrap(),
+            json!({ "readTextFile": false, "writeTextFile": false })
+        );
+
+        let caps = FileSystemCapabilities::new()
+            .read_text_file(true)
+            .write_text_file(true);
+        assert_eq!(
+            serde_json::to_value(&caps).unwrap(),
+            json!({ "readTextFile": true, "writeTextFile": true })
+        );
+
+        // Missing fields default to false (not unknown).
+        let parsed: FileSystemCapabilities = serde_json::from_value(json!({})).unwrap();
+        assert!(!parsed.read_text_file);
+        assert!(!parsed.write_text_file);
+    }
+
+    #[test]
+    fn client_capabilities_defaults_round_trip() {
+        use serde_json::json;
+
+        // Sending `{}` from a peer should yield a fully-default
+        // ClientCapabilities (no permissions granted by default).
+        let caps: ClientCapabilities = serde_json::from_value(json!({})).unwrap();
+        assert!(!caps.fs.read_text_file);
+        assert!(!caps.fs.write_text_file);
+        assert!(!caps.terminal);
+
+        // Round-trip a populated capability set.
+        let caps = ClientCapabilities::new()
+            .fs(FileSystemCapabilities::new().read_text_file(true))
+            .terminal(true);
+        let value = serde_json::to_value(&caps).unwrap();
+        assert_eq!(value["fs"]["readTextFile"], json!(true));
+        assert_eq!(value["fs"]["writeTextFile"], json!(false));
+        assert_eq!(value["terminal"], json!(true));
+
+        let parsed: ClientCapabilities = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, caps);
+    }
+
+    #[test]
+    fn id_newtypes_from_and_display() {
+        use std::sync::Arc;
+
+        let from_str: PermissionOptionId = "id-1".into();
+        let from_string: PermissionOptionId = String::from("id-1").into();
+        let from_arc: PermissionOptionId = Arc::<str>::from("id-1").into();
+        assert_eq!(from_str, from_string);
+        assert_eq!(from_string, from_arc);
+        assert_eq!(from_str.to_string(), "id-1");
+
+        let tid_str: TerminalId = "term-1".into();
+        let tid_string: TerminalId = String::from("term-1").into();
+        let tid_arc: TerminalId = Arc::<str>::from("term-1").into();
+        assert_eq!(tid_str, tid_string);
+        assert_eq!(tid_string, tid_arc);
+        assert_eq!(tid_str.to_string(), "term-1");
+    }
+
+    #[test]
+    fn permission_option_kind_rejects_unknown_variant() {
+        // Snake_case is exhaustively enumerated above; this guards against
+        // a future contributor relaxing the matcher and silently accepting
+        // "allow_silently" or similar in a `RequestPermissionOutcome::Selected`
+        // path.
+        let err = serde_json::from_value::<PermissionOptionKind>(serde_json::json!("ALLOW_ONCE"))
+            .unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("variant"));
+    }
 }
