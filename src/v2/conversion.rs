@@ -9706,6 +9706,99 @@ mod tests {
         );
     }
 
+    /// Logout was stabilized in v1 (and mirrored in v2). The v1 <-> v2
+    /// conversion of the request and response — including `_meta` — must
+    /// round-trip cleanly, otherwise gateways that bridge the two namespaces
+    /// would silently drop logout payloads.
+    #[test]
+    fn round_trips_logout_request_and_response() {
+        let mut meta = v1::Meta::new();
+        meta.insert("trace".to_string(), serde_json::json!("abc"));
+
+        let request = v1::LogoutRequest::new().meta(meta.clone());
+        assert_v1_round_trip::<v1::LogoutRequest, v2::LogoutRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LogoutRequest, v2::LogoutRequest>(request);
+
+        let response = v1::LogoutResponse::new().meta(meta);
+        assert_v1_round_trip::<v1::LogoutResponse, v2::LogoutResponse>(response.clone());
+        assert_json_eq_after_v1_to_v2::<v1::LogoutResponse, v2::LogoutResponse>(response);
+    }
+
+    /// `auth.logout` is the capability advertisement for the stabilized
+    /// logout method. Round-tripping `AgentAuthCapabilities` (including the
+    /// nested `LogoutCapabilities` `_meta`) protects gateways from silently
+    /// dropping the logout capability when bridging v1 <-> v2.
+    #[test]
+    fn round_trips_agent_auth_capabilities_with_logout() {
+        let mut cap_meta = v1::Meta::new();
+        cap_meta.insert("kind".to_string(), serde_json::json!("logout"));
+
+        let caps =
+            v1::AgentAuthCapabilities::new().logout(v1::LogoutCapabilities::new().meta(cap_meta));
+        assert_v1_round_trip::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(caps.clone());
+        assert_json_eq_after_v1_to_v2::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(caps);
+    }
+
+    /// Even when the logout capability is absent, the conversion of
+    /// `AgentAuthCapabilities` must preserve that absence. A regression
+    /// where `None` round-trips to `Some(default)` would silently flip
+    /// every agent into "supports logout".
+    #[test]
+    fn round_trips_agent_auth_capabilities_without_logout() {
+        let caps = v1::AgentAuthCapabilities::new();
+        assert_v1_round_trip::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(caps.clone());
+        assert_json_eq_after_v1_to_v2::<v1::AgentAuthCapabilities, v2::AgentAuthCapabilities>(caps);
+    }
+
+    /// Round-trip for the unstable session/delete request and response,
+    /// added alongside the feature in #1216. Guards against drift between
+    /// the v1 and v2 namespaces while the feature is still feature-gated.
+    #[cfg(feature = "unstable_session_delete")]
+    #[test]
+    fn round_trips_session_delete_request_and_response() {
+        let request = v1::DeleteSessionRequest::new("sess_abc123");
+        assert_v1_round_trip::<v1::DeleteSessionRequest, v2::DeleteSessionRequest>(request.clone());
+        assert_json_eq_after_v1_to_v2::<v1::DeleteSessionRequest, v2::DeleteSessionRequest>(
+            request,
+        );
+
+        let mut meta = v1::Meta::new();
+        meta.insert("trace".to_string(), serde_json::json!("xyz"));
+        let response = v1::DeleteSessionResponse::new().meta(meta);
+        assert_v1_round_trip::<v1::DeleteSessionResponse, v2::DeleteSessionResponse>(
+            response.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::DeleteSessionResponse, v2::DeleteSessionResponse>(
+            response,
+        );
+    }
+
+    /// Round-trip for the unstable provider configuration messages whose
+    /// type names were renamed to singular form in #1272. Guards against
+    /// the v1 and v2 namespaces drifting on the rename.
+    #[cfg(feature = "unstable_llm_providers")]
+    #[test]
+    fn round_trips_provider_set_and_disable_requests() {
+        let mut headers = std::collections::HashMap::new();
+        headers.insert("Authorization".to_string(), "Bearer sk-test".to_string());
+        let set = v1::SetProviderRequest::new(
+            "main",
+            v1::LlmProtocol::OpenAi,
+            "https://api.openai.com/v1",
+        )
+        .headers(headers);
+        assert_v1_round_trip::<v1::SetProviderRequest, v2::SetProviderRequest>(set.clone());
+        assert_json_eq_after_v1_to_v2::<v1::SetProviderRequest, v2::SetProviderRequest>(set);
+
+        let disable = v1::DisableProviderRequest::new("secondary");
+        assert_v1_round_trip::<v1::DisableProviderRequest, v2::DisableProviderRequest>(
+            disable.clone(),
+        );
+        assert_json_eq_after_v1_to_v2::<v1::DisableProviderRequest, v2::DisableProviderRequest>(
+            disable,
+        );
+    }
+
     /// Mirror of the v1 test for the v2 [`Error`] type.
     #[test]
     fn protocol_conversion_error_maps_into_v2_error() {

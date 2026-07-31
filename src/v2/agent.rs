@@ -5585,6 +5585,76 @@ mod test_serialization {
         assert!(matches!(deserialized, AuthMethod::Agent(_)));
     }
 
+    #[test]
+    fn test_logout_method_name_and_routing() {
+        // Mirror of the v1 test. v2 currently re-exports the same shape; if
+        // v2 ever diverges the method name or routing, this fails.
+        assert_eq!(AGENT_METHOD_NAMES.logout, "logout");
+        assert_eq!(LOGOUT_METHOD_NAME, "logout");
+        assert_eq!(
+            ClientRequest::LogoutRequest(LogoutRequest::new()).method(),
+            "logout"
+        );
+    }
+
+    #[test]
+    fn test_logout_request_response_serialization() {
+        assert_eq!(
+            serde_json::to_value(LogoutRequest::new()).unwrap(),
+            json!({})
+        );
+        assert_eq!(
+            serde_json::to_value(LogoutResponse::new()).unwrap(),
+            json!({})
+        );
+
+        let req: LogoutRequest = serde_json::from_value(json!({})).unwrap();
+        assert!(req.meta.is_none());
+        let resp: LogoutResponse = serde_json::from_value(json!({})).unwrap();
+        assert!(resp.meta.is_none());
+
+        let mut meta = Meta::new();
+        meta.insert("trace".to_string(), json!("abc"));
+        let req_json = serde_json::to_value(LogoutRequest::new().meta(meta.clone())).unwrap();
+        assert_eq!(req_json, json!({ "_meta": { "trace": "abc" } }));
+        let resp_json = serde_json::to_value(LogoutResponse::new().meta(meta)).unwrap();
+        assert_eq!(resp_json, json!({ "_meta": { "trace": "abc" } }));
+    }
+
+    #[test]
+    fn test_logout_capabilities_serialization() {
+        let caps = AgentCapabilities::new()
+            .auth(AgentAuthCapabilities::new().logout(LogoutCapabilities::new()));
+        let json = serde_json::to_value(&caps).unwrap();
+        assert_eq!(json["auth"], json!({ "logout": {} }));
+
+        let round_tripped: AgentCapabilities = serde_json::from_value(json).unwrap();
+        assert!(round_tripped.auth.logout.is_some());
+
+        let no_logout: AgentCapabilities = serde_json::from_value(json!({ "auth": {} })).unwrap();
+        assert!(no_logout.auth.logout.is_none());
+    }
+
+    #[test]
+    fn test_logout_capability_defaults_on_malformed_value() {
+        // Mirror of the v1 fault-tolerance test for the v2 type namespace.
+        let cases: Vec<serde_json::Value> = vec![
+            json!("not-an-object"),
+            json!(42),
+            json!(true),
+            json!([1, 2, 3]),
+            json!({ "_meta": "not-an-object" }),
+        ];
+        for bad in cases {
+            let caps: AgentAuthCapabilities =
+                serde_json::from_value(json!({ "logout": bad })).unwrap();
+            assert!(
+                caps.logout.is_none(),
+                "malformed `logout` capability should fall back to None"
+            );
+        }
+    }
+
     #[cfg(feature = "unstable_session_delete")]
     #[test]
     fn test_session_delete_serialization() {
@@ -6322,6 +6392,38 @@ mod test_serialization {
 
         let deserialized: ListProvidersResponse = serde_json::from_value(json).unwrap();
         assert_eq!(deserialized.providers.len(), 1);
+    }
+
+    #[cfg(feature = "unstable_llm_providers")]
+    #[test]
+    fn test_provider_method_names_and_routing() {
+        // Mirror of the v1 test; ensures the rename to singular form
+        // (`providers/set`, `providers/disable`) is also enforced in v2.
+        assert_eq!(AGENT_METHOD_NAMES.providers_list, "providers/list");
+        assert_eq!(AGENT_METHOD_NAMES.providers_set, "providers/set");
+        assert_eq!(AGENT_METHOD_NAMES.providers_disable, "providers/disable");
+        assert_eq!(PROVIDERS_LIST_METHOD_NAME, "providers/list");
+        assert_eq!(PROVIDERS_SET_METHOD_NAME, "providers/set");
+        assert_eq!(PROVIDERS_DISABLE_METHOD_NAME, "providers/disable");
+
+        assert_eq!(
+            ClientRequest::ListProvidersRequest(ListProvidersRequest::new()).method(),
+            "providers/list",
+        );
+        assert_eq!(
+            ClientRequest::SetProviderRequest(SetProviderRequest::new(
+                "main",
+                LlmProtocol::OpenAi,
+                "https://api.openai.com/v1",
+            ))
+            .method(),
+            "providers/set",
+        );
+        assert_eq!(
+            ClientRequest::DisableProviderRequest(DisableProviderRequest::new("secondary"))
+                .method(),
+            "providers/disable",
+        );
     }
 
     #[cfg(feature = "unstable_llm_providers")]
